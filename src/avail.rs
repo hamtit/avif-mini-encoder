@@ -36,7 +36,7 @@ pub fn has_top_right(
     row_off: usize,
     col_off: usize,
     ssx: usize,
-    ssy: usize,
+    _ssy: usize,
 ) -> bool {
     if !top_available || !right_available {
         return false;
@@ -81,7 +81,7 @@ pub fn has_bottom_left(
     tx: TxSize,
     row_off: usize,
     col_off: usize,
-    ssx: usize,
+    _ssx: usize,
     ssy: usize,
 ) -> bool {
     if !bottom_available || !left_available {

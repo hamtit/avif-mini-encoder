@@ -219,7 +219,9 @@ pub const ADST_DCT: TxType = 1;
 pub const DCT_ADST: TxType = 2;
 pub const ADST_ADST: TxType = 3;
 pub const IDTX: TxType = 9;
+#[allow(dead_code)]
 pub const V_DCT: TxType = 10;
+#[allow(dead_code)]
 pub const H_DCT: TxType = 11;
 
 /// Scan class of a transform type: 0 = 2-D, 1 = vertical-only (V_*),
@@ -235,7 +237,9 @@ pub const DC_PRED: u8 = 0;
 pub const V_PRED: u8 = 1;
 pub const H_PRED: u8 = 2;
 pub const D45_PRED: u8 = 3;
+#[allow(dead_code)]
 pub const D135_PRED: u8 = 4;
+#[allow(dead_code)]
 pub const D113_PRED: u8 = 5;
 pub const D157_PRED: u8 = 6;
 pub const D203_PRED: u8 = 7;
@@ -243,6 +247,7 @@ pub const D67_PRED: u8 = 8;
 pub const SMOOTH_PRED: u8 = 9;
 pub const SMOOTH_V_PRED: u8 = 10;
 pub const SMOOTH_H_PRED: u8 = 11;
+#[allow(dead_code)]
 pub const PAETH_PRED: u8 = 12;
 pub const UV_CFL_PRED: u8 = 13;
 pub const INTRA_MODES: usize = 13;

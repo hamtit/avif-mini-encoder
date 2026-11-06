@@ -644,7 +644,7 @@ impl Encoder {
         let mut ranked: Vec<(f64, Modes)> = Vec::with_capacity(80);
         let model_tx = if self.lossless { TxSize::T4x4 } else { max_tx };
         let env = self.model_env(0, &bp, model_tx);
-        let mut push = |e: &Encoder, m: Modes, pred: &mut [u8]| {
+        let push = |e: &Encoder, m: Modes, pred: &mut [u8]| {
             let satd = e.model_satd(&env, &bp, &m, model_tx, pred) as f64;
             let rate = e.luma_mode_rate(bsize, ctx, &m) as f64 / 512.0;
             (satd + lambda_sad * rate * 4.0, m)
