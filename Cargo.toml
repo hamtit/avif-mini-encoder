@@ -1,0 +1,19 @@
+[package]
+name = "avif-mini-encoder"
+version = "0.1.0"
+edition = "2024"
+description = "Pure-Rust AVIF (AV1 still picture) encoder modelled on libaom's all-intra mode with tune IQ"
+license = "BSD-2-Clause"
+publish = false
+
+[dependencies]
+avif-serialize = "0.8"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+debug = 1
+
+[profile.test]
+opt-level = 3
