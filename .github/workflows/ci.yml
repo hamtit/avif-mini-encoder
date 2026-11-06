@@ -1,0 +1,177 @@
+name: CI
+
+# PRs and pushes build/test on Linux x64 and arm64, then verify a source package.
+# Merging a version bump to main creates v<version> and a GitHub release.
+# Pushing a matching tag is also supported. Nothing is published to crates.io.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  config:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.config.outputs.version }}
+      tag: ${{ steps.config.outputs.tag }}
+      release: ${{ steps.config.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: config
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="$(python3 - <<'PY'
+          import re
+          import tomllib
+
+          with open("Cargo.toml", "rb") as f:
+              package = tomllib.load(f)["package"]
+          version = package["version"]
+          if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"Invalid release version: {version}")
+          with open("Cargo.lock", "rb") as f:
+              packages = tomllib.load(f)["package"]
+          locked = next(p["version"] for p in packages if p["name"] == package["name"] and "source" not in p)
+          if locked != version:
+              raise SystemExit(f"Cargo.lock has {locked}, Cargo.toml has {version}; update Cargo.lock")
+          print(version)
+          PY
+          )"
+          tag="v${version}"
+          release=false
+          if [[ "$REF_TYPE" == tag ]]; then
+            if [[ "$REF_NAME" != "$tag" ]]; then
+              echo "::error::tag $REF_NAME does not match Cargo.toml (expected $tag)"
+              exit 1
+            fi
+            release=true
+          elif [[ "$EVENT" == push && "$REF_NAME" == main ]]; then
+            if gh api "repos/$GH_REPO/git/ref/tags/$tag" > /dev/null 2> tag-error.log; then
+              echo "$tag already exists; not releasing"
+            elif grep -q '(HTTP 404)' tag-error.log; then
+              release=true
+            else
+              cat tag-error.log >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: config
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build library and examples
+        run: cargo build --release --locked --lib --examples
+      - name: Unit and documentation tests
+        run: cargo test --release --locked
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  package:
+    needs: [config, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package and verify contents
+        env:
+          VERSION: ${{ needs.config.outputs.version }}
+        run: |
+          cargo package --locked --no-verify
+          mkdir -p dist work
+          cp "target/package/avif-mini-encoder-${VERSION}.crate" dist/
+          tar -tzf "dist/avif-mini-encoder-${VERSION}.crate"
+          tar -xzf "dist/avif-mini-encoder-${VERSION}.crate" -C work
+          package="work/avif-mini-encoder-${VERSION}"
+          test -f "$package/LICENSE"
+          test -f "$package/README.md"
+          cargo build --release --locked --lib --examples --manifest-path "$package/Cargo.toml"
+          cargo test --release --locked --manifest-path "$package/Cargo.toml"
+          (cd dist && sha256sum *.crate > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist
+          if-no-files-found: error
+
+  release:
+    if: needs.config.outputs.release == 'true'
+    needs: [config, package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.config.outputs.tag }}
+          VERSION: ${{ needs.config.outputs.version }}
+        run: |
+          cat > notes.md <<EOF
+          Pure-Rust AVIF (AV1 still picture) encoder modelled on libaom's all-intra mode with tune IQ.
+
+          - \`avif-mini-encoder-${VERSION}.crate\`: Cargo source package, including examples and BSD-2-Clause license.
+          - \`SHA256SUMS\`: SHA-256 checksum of the package.
+
+          The library and examples are built and tested on Linux x64 and arm64.
+          The source package is also unpacked, built and tested before release.
+          EOF
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            target=(--verify-tag)
+          else
+            target=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$TAG" "${target[@]}" \
+            --title "avif-mini-encoder ${VERSION}" --notes-file notes.md \
+            "dist/avif-mini-encoder-${VERSION}.crate" dist/SHA256SUMS
