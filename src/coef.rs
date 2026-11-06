@@ -528,18 +528,22 @@ unsafe fn ctx_map_avx2<const CLASS: u8>(levels: &mut [u8], info: &TxbInfo, max_p
     let mask = _mm256_set1_epi8(0x7f);
     let mut p = 0usize;
     // Reads reach at most max_pos + 31 + 4 * stride < LEVELS_REGION.
-    while p <= max_pos {
-        let m = |o: usize| _mm256_min_epu8(_mm256_loadu_si256(lp.add(p + o) as *const __m256i), three);
-        let mut mag = _mm256_add_epi8(m(s), m(1));
-        mag = match CLASS {
-            TX_CLASS_2D => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(s + 1), m(2 * s)), m(2))),
-            TX_CLASS_VERT => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(2), m(3)), m(4))),
-            _ => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(2 * s), m(3 * s)), m(4 * s))),
-        };
-        let half = _mm256_and_si256(_mm256_srli_epi16(_mm256_add_epi8(mag, one), 1), mask);
-        let ctx = _mm256_add_epi8(_mm256_min_epu8(half, four), _mm256_loadu_si256(op.add(p) as *const __m256i));
-        _mm256_storeu_si256(mp.add(p) as *mut __m256i, ctx);
-        p += 32;
+    // SAFETY: AVX2 is guaranteed by the caller; every load/store stays inside the
+    // padded regions per the bounds argument above.
+    unsafe {
+        while p <= max_pos {
+            let m = |o: usize| _mm256_min_epu8(_mm256_loadu_si256(lp.add(p + o) as *const __m256i), three);
+            let mut mag = _mm256_add_epi8(m(s), m(1));
+            mag = match CLASS {
+                TX_CLASS_2D => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(s + 1), m(2 * s)), m(2))),
+                TX_CLASS_VERT => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(2), m(3)), m(4))),
+                _ => _mm256_add_epi8(mag, _mm256_add_epi8(_mm256_add_epi8(m(2 * s), m(3 * s)), m(4 * s))),
+            };
+            let half = _mm256_and_si256(_mm256_srli_epi16(_mm256_add_epi8(mag, one), 1), mask);
+            let ctx = _mm256_add_epi8(_mm256_min_epu8(half, four), _mm256_loadu_si256(op.add(p) as *const __m256i));
+            _mm256_storeu_si256(mp.add(p) as *mut __m256i, ctx);
+            p += 32;
+        }
     }
 }
 

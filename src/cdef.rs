@@ -113,17 +113,6 @@ fn find_dir(p: &Plane, x0: usize, y0: usize) -> (usize, i32) {
     (best_dir, var)
 }
 
-#[inline(always)]
-fn constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
-    if threshold == 0 {
-        return 0;
-    }
-    let shift = (damping - (31 - (threshold as u32).leading_zeros() as i32)).max(0);
-    let a = diff.abs();
-    let v = (threshold - (a >> shift)).clamp(0, a);
-    if diff < 0 { -v } else { v }
-}
-
 fn adjust_strength(strength: i32, var: i32) -> i32 {
     let i = if var >> 6 != 0 { (31 - ((var >> 6) as u32).leading_zeros() as i32).min(12) } else { 0 };
     if var != 0 { (strength * (4 + i) + 8) >> 4 } else { 0 }
@@ -292,7 +281,7 @@ fn search_rows<const W: usize>(
     let sec_taps = [2i32, 1];
     let buf = &src.buf;
     let mut acc = [0i64; TOTAL];
-    let rnd = |s: i32| ((8 + s - (s < 0) as i32) >> 4);
+    let rnd = |s: i32| (8 + s - (s < 0) as i32) >> 4;
     for i in 0..bh {
         let pos = ((y0 as isize - src.y0) as usize + i) * PSTRIDE + (x0 as isize - src.x0) as usize;
         let x: [i32; W] = core::array::from_fn(|j| buf[pos + j] as i32);
@@ -303,7 +292,7 @@ fn search_rows<const W: usize>(
         };
         let mut lo = x;
         let mut hi = x;
-        let mut upd = |v: &[i32; W], lo: &mut [i32; W], hi: &mut [i32; W]| {
+        let upd = |v: &[i32; W], lo: &mut [i32; W], hi: &mut [i32; W]| {
             for j in 0..W {
                 hi[j] = hi[j].max(if v[j] == VERY_LARGE { x[j] } else { v[j] });
                 lo[j] = lo[j].min(v[j]);
@@ -457,96 +446,6 @@ fn filter_fb(
             continue;
         }
         filter_block(src, &mut out[o..], 64, x0, y0, bw, bh, t, sec, if pri != 0 { dir } else { 0 }, damping);
-    }
-}
-
-/// SSE of the non-skipped blocks in a filter unit. The maximum is
-/// 64*64*255*255, so all SIMD i32 lanes and the final u32 sum are exact.
-fn distortion(src: &[u8], stride: usize, out: &[u8], list: &[(usize, usize)], bw: usize, bh: usize) -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    if crate::has_avx2() {
-        // SAFETY: runtime feature detection; all loads are slice-checked below.
-        return unsafe { distortion_avx2(src, stride, out, list, bw, bh) };
-    }
-    distortion_scalar(src, stride, out, list, bw, bh)
-}
-
-fn distortion_scalar(src: &[u8], stride: usize, out: &[u8], list: &[(usize, usize)], bw: usize, bh: usize) -> u64 {
-    let mut sum = 0u64;
-    for &(by, bx) in list {
-        for r in by * bh..(by + 1) * bh {
-            let x = bx * bw;
-            let a = &src[r * stride + x..r * stride + x + bw];
-            let b = &out[r * 64 + x..r * 64 + x + bw];
-            for (&a, &b) in a.iter().zip(b) {
-                let d = a as i32 - b as i32;
-                sum += (d * d) as u64;
-            }
-        }
-    }
-    sum
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn distortion_avx2(src: &[u8], stride: usize, out: &[u8], list: &[(usize, usize)], bw: usize, bh: usize) -> u64 {
-    use std::arch::x86_64::*;
-    assert!(bw == 4 || bw == 8);
-    let mut sum = _mm_setzero_si128();
-    for &(by, bx) in list {
-        for r in by * bh..(by + 1) * bh {
-            let x = bx * bw;
-            let a = &src[r * stride + x..r * stride + x + bw];
-            let b = &out[r * 64 + x..r * 64 + x + bw];
-            let (a, b) = if bw == 8 {
-                // SAFETY: both slices have exactly eight readable bytes.
-                unsafe { (_mm_loadl_epi64(a.as_ptr().cast()), _mm_loadl_epi64(b.as_ptr().cast())) }
-            } else {
-                (_mm_cvtsi32_si128(i32::from_ne_bytes(a.try_into().unwrap())),
-                 _mm_cvtsi32_si128(i32::from_ne_bytes(b.try_into().unwrap())))
-            };
-            let d = _mm_sub_epi16(_mm_cvtepu8_epi16(a), _mm_cvtepu8_epi16(b));
-            sum = _mm_add_epi32(sum, _mm_madd_epi16(d, d));
-        }
-    }
-    sum = _mm_hadd_epi32(sum, sum);
-    sum = _mm_hadd_epi32(sum, sum);
-    _mm_cvtsi128_si32(sum) as u32 as u64
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn distortion_matches_scalar() {
-        for bw in [4, 8] {
-            for bh in [4, 8] {
-                for pattern in 0..5 {
-                    let stride = 64 + 13;
-                    let h = 8 * bh;
-                    let w = 8 * bw;
-                    let mut src = vec![0; (h - 1) * stride + w];
-                    let mut out = vec![0; (h - 1) * 64 + w];
-                    for r in 0..h {
-                        for c in 0..w {
-                            src[r * stride + c] = match pattern {
-                                0 => 0, 1 => 255, _ => ((r * 131 + c * 17) % 256) as u8,
-                            };
-                            out[r * 64 + c] = match pattern {
-                                0 => 255, 1 => 0, 2 => src[r * stride + c],
-                                _ => ((r * 19 + c * 71) % 256) as u8,
-                            };
-                        }
-                    }
-                    for step in [1, 2, 3, 64, 65] {
-                        let list: Vec<_> = (0..64).filter(|i| (i + 1) % step == 0).map(|i| (i / 8, i % 8)).collect();
-                        let expected = distortion_scalar(&src, stride, &out, &list, bw, bh);
-                        assert_eq!(distortion(&src, stride, &out, &list, bw, bh), expected);
-                    }
-                }
-            }
-        }
     }
 }
 
