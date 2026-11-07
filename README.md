@@ -16,6 +16,7 @@ libaom の出力とのバイト一致や、libaom と同等の速度・画質は
 - 符号化ツール: 全イントラ予測モード (方向予測 + 角度差分、SMOOTH 系、PAETH、CfL、filter intra)、変換 (DCT / ADST / FLIPADST / IDTX / 1D、4x4〜64x64)、変換サイズ選択、量子化行列 (QM)、delta q (variance boost)、chroma delta q、デブロッキング、CDEF。
 - tune IQ の調整 (QM レベル、chroma delta q、variance boost、sharpness、QM-PSNR 歪み、rdmult の重み、SSIM による rdmult スケーリング、CDEF adaptive) を参考に実装。
 - x86-64 では主要な計算 (変換、予測、量子化、SATD、CDEF など) を実行時に AVX2 へ切り替える。`AV1_NO_AVX2=1` で通常経路を強制できる。
+- arm64 では NEON (ベースラインなので実行時検出は不要) の手書きカーネル (SATD、CfL、角度予測の補間、係数コスト文脈) を使う。`AV1_NO_NEON=1` で通常経路を強制できる。出力は AVX2 / NEON / 通常経路でビット一致する。
 - CDEF 強度探索の並列化と、色・アルファの同時エンコード。出力はスレッド数によらずバイト一致。
 
 ### 未実装・既知の差分
@@ -68,7 +69,7 @@ PPM を読んで OBU を書き出す検証ツールが `examples/rawenc.rs`。
 
 ## 開発
 
-`cargo test --release` で単体テスト (変換の往復、AVX2 と通常経路の一致など) が走る。
+`cargo test --release` で単体テスト (変換の往復、AVX2 / NEON と通常経路の一致など) が走る。
 
 libaom (aomdec) との一致確認:
 

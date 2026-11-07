@@ -8,16 +8,22 @@ mod avail;
 mod error;
 
 /// Whether AVX2 can be used (checked once).
+#[cfg(target_arch = "x86_64")]
 #[inline]
 pub(crate) fn has_avx2() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use std::sync::OnceLock;
-        static F: OnceLock<bool> = OnceLock::new();
-        *F.get_or_init(|| std::arch::is_x86_feature_detected!("avx2") && !debug_flag("AV1_NO_AVX2"))
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    false
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| std::arch::is_x86_feature_detected!("avx2") && !debug_flag("AV1_NO_AVX2"))
+}
+
+/// Whether the NEON kernels can be used (checked once). NEON is part of the
+/// aarch64 baseline, so only the `AV1_NO_NEON` developer switch can turn it off.
+#[cfg(target_arch = "aarch64")]
+#[inline]
+pub(crate) fn has_neon() -> bool {
+    use std::sync::OnceLock;
+    static F: OnceLock<bool> = OnceLock::new();
+    *F.get_or_init(|| !debug_flag("AV1_NO_NEON"))
 }
 
 /// Developer switches read once from AV1_* environment variables.

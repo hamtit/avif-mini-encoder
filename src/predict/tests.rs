@@ -154,3 +154,37 @@ fn filter_intra_matches_reference() {
         }
     }
 }
+
+/// The vectorised edge interpolation must equal the scalar formula for every
+/// shift, both steps and lengths around the vector width.
+#[test]
+fn interpolate_matches_scalar() {
+    let mut seed = 0x1357_9bdfu32;
+    for step in [1usize, 2] {
+        for len in 1..40 {
+            let edge: Vec<u8> = (0..(len - 1) * step + 2)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect();
+            for shift in 0..32 {
+                let expected: Vec<u8> = (0..len)
+                    .map(|j| {
+                        let (a, b) = (edge[j * step] as i32, edge[j * step + 1] as i32);
+                        ((a * (32 - shift) + b * shift + 16) >> 5) as u8
+                    })
+                    .collect();
+                let mut out = vec![0u8; len];
+                if step == 1 {
+                    interpolate::<1>(&mut out, &edge, shift);
+                } else {
+                    interpolate::<2>(&mut out, &edge, shift);
+                }
+                assert_eq!(out, expected, "step {step} len {len} shift {shift}");
+            }
+        }
+    }
+}
