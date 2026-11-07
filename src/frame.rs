@@ -19,7 +19,14 @@ impl Plane {
 
     /// Copy `src` (width x height, `src_stride`) and replicate the right and
     /// bottom edges into the padding.
-    pub fn from_slice(src: &[u8], src_stride: usize, width: usize, height: usize, alloc_w: usize, alloc_h: usize) -> Plane {
+    pub fn from_slice(
+        src: &[u8],
+        src_stride: usize,
+        width: usize,
+        height: usize,
+        alloc_w: usize,
+        alloc_h: usize,
+    ) -> Plane {
         let mut p = Plane::new(width, height, alloc_w, alloc_h);
         for y in 0..alloc_h {
             let sy = y.min(height - 1);

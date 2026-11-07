@@ -110,7 +110,14 @@ impl Encoder {
         }
     }
 
-    fn write_block<W: Writer>(&self, w: &mut W, cdf: &mut CdfContext, ctx: &mut Contexts, dec: &Decisions, st: &mut WriteState) {
+    fn write_block<W: Writer>(
+        &self,
+        w: &mut W,
+        cdf: &mut CdfContext,
+        ctx: &mut Contexts,
+        dec: &Decisions,
+        st: &mut WriteState,
+    ) {
         let b: &BlockDec = &dec.blocks[st.block];
         st.block += 1;
         let (bsize, mi_row, mi_col) = (b.bsize, b.mi_row as usize, b.mi_col as usize);
@@ -154,8 +161,10 @@ impl Encoder {
             }
         }
         // y mode
-        let actx = if self.avail_up(mi_row) { INTRA_MODE_CONTEXT[self.mi(mi_row - 1, mi_col).y_mode as usize] } else { 0 };
-        let lctx = if self.avail_left(mi_col) { INTRA_MODE_CONTEXT[self.mi(mi_row, mi_col - 1).y_mode as usize] } else { 0 };
+        let actx =
+            if self.avail_up(mi_row) { INTRA_MODE_CONTEXT[self.mi(mi_row - 1, mi_col).y_mode as usize] } else { 0 };
+        let lctx =
+            if self.avail_left(mi_col) { INTRA_MODE_CONTEXT[self.mi(mi_row, mi_col - 1).y_mode as usize] } else { 0 };
         w.symbol(m.y_mode as usize, &mut cdf.kf_y[actx][lctx], 13);
         let use_angle = bsize >= BlockSize::B8x8;
         if use_angle && is_directional(m.y_mode) {

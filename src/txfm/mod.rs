@@ -3,8 +3,8 @@
 //! bit-exact with the decoder. Coefficients are stored column-major
 //! (`coeff[col * height + row]`), as in libaom.
 
-mod txfm1d;
 pub mod lane;
+mod txfm1d;
 
 use lane::{Lane, Simd};
 
@@ -275,12 +275,28 @@ pub fn inverse_add(coeff: &[i32], tx_size: TxSize, tx_type: TxType, eob: usize, 
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn inverse_add_avx2(coeff: &[i32], tx_size: TxSize, tx_type: TxType, eob: usize, dst: &mut [u8], stride: usize, sc: &mut TxScratch) {
+unsafe fn inverse_add_avx2(
+    coeff: &[i32],
+    tx_size: TxSize,
+    tx_type: TxType,
+    eob: usize,
+    dst: &mut [u8],
+    stride: usize,
+    sc: &mut TxScratch,
+) {
     inverse_add_impl(coeff, tx_size, tx_type, eob, dst, stride, sc);
 }
 
 #[inline(always)]
-fn inverse_add_impl(coeff: &[i32], tx_size: TxSize, tx_type: TxType, eob: usize, dst: &mut [u8], stride: usize, sc: &mut TxScratch) {
+fn inverse_add_impl(
+    coeff: &[i32],
+    tx_size: TxSize,
+    tx_type: TxType,
+    eob: usize,
+    dst: &mut [u8],
+    stride: usize,
+    sc: &mut TxScratch,
+) {
     let w = tx_size.width();
     let h = tx_size.height();
     if w >= 8 && h >= 8 {
@@ -380,12 +396,26 @@ pub fn forward(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxType
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn forward_avx2(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxType, out: &mut [i32], sc: &mut TxScratch) {
+unsafe fn forward_avx2(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    tx_type: TxType,
+    out: &mut [i32],
+    sc: &mut TxScratch,
+) {
     forward_impl(residual, stride, tx_size, tx_type, out, sc);
 }
 
 #[inline(always)]
-fn forward_impl(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxType, out: &mut [i32], sc: &mut TxScratch) {
+fn forward_impl(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    tx_type: TxType,
+    out: &mut [i32],
+    sc: &mut TxScratch,
+) {
     let w = tx_size.width();
     let h = tx_size.height();
     if w >= 8 && h >= 8 {
@@ -396,8 +426,14 @@ fn forward_impl(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxTyp
 }
 
 #[inline(always)]
-fn forward_n<const L: usize>(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxType, out: &mut [i32], sc: &mut TxScratch)
-where
+fn forward_n<const L: usize>(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    tx_type: TxType,
+    out: &mut [i32],
+    sc: &mut TxScratch,
+) where
     Simd<L>: ScratchLanes,
 {
     let w = tx_size.width();
@@ -418,7 +454,13 @@ where
             let sr = if ud_flip { h - 1 - r } else { r };
             let src = &residual[sr * stride + c0..sr * stride + c0 + L];
             let v = Simd::<L>(core::array::from_fn(|l| src[l] as i32));
-            tin[r] = if shift[0] > 0 { v.shl(shift[0] as u32) } else if shift[0] < 0 { v.round_shift((-shift[0]) as u32) } else { v };
+            tin[r] = if shift[0] > 0 {
+                v.shl(shift[0] as u32)
+            } else if shift[0] < 0 {
+                v.round_shift((-shift[0]) as u32)
+            } else {
+                v
+            };
         }
         fwd_1d(vt, h, tin, tout, cos_col);
         for r in 0..h {
@@ -573,7 +615,13 @@ mod tests {
                                 residual[r * stride + c] = match pattern {
                                     0 => 0,
                                     1 => 255,
-                                    2 => if (r + c) % 2 == 0 { -255 } else { 255 },
+                                    2 => {
+                                        if (r + c) % 2 == 0 {
+                                            -255
+                                        } else {
+                                            255
+                                        }
+                                    }
                                     _ => (rnd() % 511) as i16 - 255,
                                 };
                             }
@@ -632,7 +680,9 @@ mod tests {
                     energy += (resid[i] as f64).powi(2);
                 }
                 let rms = (err / (w * h) as f64).sqrt();
-                if rms >= 1.5 { eprintln!("{tx:?} type {tt}: rms err {rms} (energy {})", (energy / (w * h) as f64).sqrt()); }
+                if rms >= 1.5 {
+                    eprintln!("{tx:?} type {tt}: rms err {rms} (energy {})", (energy / (w * h) as f64).sqrt());
+                }
             }
         }
     }

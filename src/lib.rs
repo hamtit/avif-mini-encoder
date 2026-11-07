@@ -20,7 +20,10 @@ pub(crate) fn has_avx2() -> bool {
 pub(crate) fn debug_flag(name: &str) -> bool {
     use std::sync::OnceLock;
     static FLAGS: OnceLock<Vec<String>> = OnceLock::new();
-    FLAGS.get_or_init(|| std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("AV1_")).collect()).iter().any(|k| k == name)
+    FLAGS
+        .get_or_init(|| std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("AV1_")).collect())
+        .iter()
+        .any(|k| k == name)
 }
 mod cdef;
 mod cdf;
@@ -200,7 +203,8 @@ pub fn encode_av1_threads(
     // after the size limits, so the products below cannot overflow.
     let (ssx, ssy) = if chroma == Chroma::Yuv444 { (0, 0) } else { (1, 1) };
     let (cw, ch) = ((width + ssx) >> ssx, (height + ssy) >> ssy);
-    let expected: &[usize] = if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
+    let expected: &[usize] =
+        if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
     if planes.len() != expected.len() {
         return Err(Error(format!("expected {} plane(s), got {}", expected.len(), planes.len())));
     }
@@ -275,7 +279,13 @@ pub fn encode_av1_pair(color: EncodeJob, alpha: EncodeJob, threads: usize) -> (E
 
 /// Benchmark helper: BT.601 full range sRGB YUV at a given qindex, tune IQ.
 #[doc(hidden)]
-pub fn encode_yuv_for_bench(w: usize, h: usize, yuv: &[Vec<u8>], ss: usize, qindex: u8) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
+pub fn encode_yuv_for_bench(
+    w: usize,
+    h: usize,
+    yuv: &[Vec<u8>],
+    ss: usize,
+    qindex: u8,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
     let planes: Vec<&[u8]> = yuv.iter().map(|p| p.as_slice()).collect();
     encode_av1(
         &planes,
@@ -347,8 +357,28 @@ mod tests {
         let a: Vec<u8> = (0..w * h).map(|i| if (i % w) < 30 { 255 } else { (i % 97) as u8 }).collect();
         let col = [&y[..], &c[..], &c[..]];
         let alp = [&a[..]];
-        let cj = EncodeJob { planes: &col, width: w, height: h, chroma: Chroma::Yuv420, color: None, full_range: true, qindex: 120, tune: Tune::Iq, speed: 5 };
-        let aj = EncodeJob { planes: &alp, width: w, height: h, chroma: Chroma::Mono, color: None, full_range: true, qindex: 90, tune: Tune::Psnr, speed: 5 };
+        let cj = EncodeJob {
+            planes: &col,
+            width: w,
+            height: h,
+            chroma: Chroma::Yuv420,
+            color: None,
+            full_range: true,
+            qindex: 120,
+            tune: Tune::Iq,
+            speed: 5,
+        };
+        let aj = EncodeJob {
+            planes: &alp,
+            width: w,
+            height: h,
+            chroma: Chroma::Mono,
+            color: None,
+            full_range: true,
+            qindex: 90,
+            tune: Tune::Psnr,
+            speed: 5,
+        };
         let seq_c = encode_av1(cj.planes, w, h, cj.chroma, None, true, 120, Tune::Iq, 5).unwrap();
         let seq_a = encode_av1(aj.planes, w, h, aj.chroma, None, true, 90, Tune::Psnr, 5).unwrap();
         for threads in [1, 2, 4] {

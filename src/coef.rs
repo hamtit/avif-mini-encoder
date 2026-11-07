@@ -1022,7 +1022,15 @@ pub fn optimize(
 }
 
 /// Decoder-exact dequantization of a block's coefficients.
-pub fn dequantize(q: &[i32], scan: &[u16], eob: usize, quant: &PlaneQuant, tx: TxSize, tx_type: TxType, dq: &mut [i32]) {
+pub fn dequantize(
+    q: &[i32],
+    scan: &[u16],
+    eob: usize,
+    quant: &PlaneQuant,
+    tx: TxSize,
+    tx_type: TxType,
+    dq: &mut [i32],
+) {
     let n = tx.coded().width() * tx.coded().height();
     dq[..n].fill(0);
     let shift = tx_scale(tx);

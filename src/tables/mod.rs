@@ -2,12 +2,17 @@
 //! `cdf_default.rs`, `misc.rs`, `sizes.rs`, `qm_offsets.rs` and `qm.bin` are
 //! extracted from the libaom 3.15.1 sources (BSD-2-Clause).
 
+// Generated/extracted tables stay in their source layout (one row per line).
+#[rustfmt::skip]
 #[allow(non_upper_case_globals, dead_code)]
 pub mod cdf_default;
+#[rustfmt::skip]
 #[allow(dead_code)]
 pub mod misc;
+#[rustfmt::skip]
 #[allow(dead_code)]
 pub mod sizes;
+#[rustfmt::skip]
 mod qm_offsets;
 
 /// Quantization matrices: `[level 0..15][plane type][3344]` weights followed
@@ -33,7 +38,11 @@ use crate::consts::{TX_CLASS_HORIZ, TX_CLASS_VERT, TxSize};
 
 /// Scan order of a transform size (coded size for 64-point) and class.
 pub fn scan(tx: TxSize, tx_class: u8) -> &'static [u16] {
-    let k = match tx_class { TX_CLASS_VERT => 1, TX_CLASS_HORIZ => 2, _ => 0 };
+    let k = match tx_class {
+        TX_CLASS_VERT => 1,
+        TX_CLASS_HORIZ => 2,
+        _ => 0,
+    };
     SCANS[tx as usize][k]
 }
 

@@ -135,7 +135,10 @@ unsafe fn sse_avx2(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: u
                 let rounded = _mm256_srli_epi32::<6>(_mm256_add_epi32(_mm256_abs_epi32(v), _mm256_set1_epi32(32)));
                 let scaled = _mm256_sign_epi32(rounded, v);
                 let dc = _mm256_cvtepu8_epi32(_mm_loadl_epi64(pred.as_ptr().add(r * ps + c).cast()));
-                let p = _mm256_min_epi32(_mm256_set1_epi32(255), _mm256_max_epi32(_mm256_setzero_si256(), _mm256_add_epi32(dc, scaled)));
+                let p = _mm256_min_epi32(
+                    _mm256_set1_epi32(255),
+                    _mm256_max_epi32(_mm256_setzero_si256(), _mm256_add_epi32(dc, scaled)),
+                );
                 let s = _mm256_cvtepu8_epi32(_mm_loadl_epi64(src.as_ptr().add(r * ss + c).cast()));
                 let d = _mm256_sub_epi32(s, p);
                 sums = _mm256_add_epi32(sums, _mm256_mullo_epi32(d, d));

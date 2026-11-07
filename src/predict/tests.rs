@@ -85,8 +85,15 @@ fn filter_intra_reference(dst: &mut [u8], stride: usize, w: usize, h: usize, abo
     buf[0][..w + 1].copy_from_slice(&above[EDGE_OFF - 1..EDGE_OFF + w]);
     for r in (1..=h).step_by(2) {
         for c in (1..=w).step_by(4) {
-            let p = [buf[r - 1][c - 1], buf[r - 1][c], buf[r - 1][c + 1],
-                buf[r - 1][c + 2], buf[r - 1][c + 3], buf[r][c - 1], buf[r + 1][c - 1]];
+            let p = [
+                buf[r - 1][c - 1],
+                buf[r - 1][c],
+                buf[r - 1][c + 1],
+                buf[r - 1][c + 2],
+                buf[r - 1][c + 3],
+                buf[r][c - 1],
+                buf[r + 1][c - 1],
+            ];
             for k in 0..8 {
                 let taps = &FILTER_INTRA_TAPS[mode * 56 + k * 7..][..7];
                 let sum: i32 = (0..7).map(|i| taps[i] as i32 * p[i] as i32).sum();
@@ -114,8 +121,20 @@ fn filter_intra_matches_reference() {
                     *v = match pattern {
                         0 => 0,
                         1 => 255,
-                        2 => if i % 2 == 0 { 255 } else { 0 },
-                        3 => if i % 2 == 0 { 0 } else { 255 },
+                        2 => {
+                            if i % 2 == 0 {
+                                255
+                            } else {
+                                0
+                            }
+                        }
+                        3 => {
+                            if i % 2 == 0 {
+                                0
+                            } else {
+                                255
+                            }
+                        }
                         _ => seed as u8,
                     };
                 }

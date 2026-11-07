@@ -129,8 +129,8 @@ impl TxSize {
     pub const ALL: [TxSize; 19] = {
         use TxSize::*;
         [
-            T4x4, T8x8, T16x16, T32x32, T64x64, T4x8, T8x4, T8x16, T16x8, T16x32, T32x16, T32x64, T64x32, T4x16,
-            T16x4, T8x32, T32x8, T16x64, T64x16,
+            T4x4, T8x8, T16x16, T32x32, T64x64, T4x8, T8x4, T8x16, T16x8, T16x32, T32x16, T32x64, T64x32, T4x16, T16x4,
+            T8x32, T32x8, T16x64, T64x16,
         ]
     };
     #[inline]
@@ -261,20 +261,20 @@ pub const MODE_TO_ANGLE: [i32; 13] = [0, 90, 180, 45, 135, 113, 157, 203, 67, 0,
 
 /// Default transform type implied by an intra mode (libaom's intra_mode_to_tx_type).
 pub const MODE_TO_TXFM: [TxType; 14] = [
-    DCT_DCT,  // DC
-    ADST_DCT, // V
-    DCT_ADST, // H
-    DCT_DCT,  // D45
+    DCT_DCT,   // DC
+    ADST_DCT,  // V
+    DCT_ADST,  // H
+    DCT_DCT,   // D45
     ADST_ADST, // D135
-    ADST_DCT, // D113
-    DCT_ADST, // D157
-    DCT_ADST, // D203
-    ADST_DCT, // D67
+    ADST_DCT,  // D113
+    DCT_ADST,  // D157
+    DCT_ADST,  // D203
+    ADST_DCT,  // D67
     ADST_ADST, // SMOOTH
-    ADST_DCT, // SMOOTH_V
-    DCT_ADST, // SMOOTH_H
+    ADST_DCT,  // SMOOTH_V
+    DCT_ADST,  // SMOOTH_H
     ADST_ADST, // PAETH
-    DCT_DCT,  // UV_CFL
+    DCT_DCT,   // UV_CFL
 ];
 
 /// Context of the above / left mode for the key-frame y-mode CDF.

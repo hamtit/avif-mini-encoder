@@ -206,16 +206,16 @@ pub fn filter_plane(e: &Encoder, plane: usize, levels: [i32; 2], sharpness: i32,
                     let ts = plane_tx(e, plane, mi_row, mi_col);
                     let tsize = if dir == 0 { ts.width() } else { ts.height() };
                     if coord & (tsize - 1) == 0 {
-                        let (pr, pc) = if dir == 0 { (mi_row, mi_col - (1 << sx)) } else { (mi_row - (1 << sy), mi_col) };
+                        let (pr, pc) =
+                            if dir == 0 { (mi_row, mi_col - (1 << sx)) } else { (mi_row - (1 << sy), mi_col) };
                         let pts = plane_tx(e, plane, pr, pc);
-                        let dim = if dir == 0 { ts.w4().trailing_zeros().min(pts.w4().trailing_zeros()) } else {
+                        let dim = if dir == 0 {
+                            ts.w4().trailing_zeros().min(pts.w4().trailing_zeros())
+                        } else {
                             ts.h4().trailing_zeros().min(pts.h4().trailing_zeros())
                         };
-                        let len = if plane > 0 {
-                            if dim == 0 { 4 } else { 6 }
-                        } else {
-                            [4, 8, 14, 14, 14][dim as usize]
-                        };
+                        let len =
+                            if plane > 0 { if dim == 0 { 4 } else { 6 } } else { [4, 8, 14, 14, 14][dim as usize] };
                         for i in 0..4 {
                             if dir == 0 {
                                 filter_line(len, t, &mut p.data, ((y + i) * stride + x) as isize, 1);
@@ -329,5 +329,8 @@ pub fn pick_and_apply(e: &mut Encoder) -> LoopFilterParams {
         filter_plane(e, 2, [level[3], level[3]], sharpness, &mut rec[2]);
     }
     e.rec = rec;
-    LoopFilterParams { level: [level[0] as u8, level[1] as u8, level[2] as u8, level[3] as u8], sharpness: sharpness as u8 }
+    LoopFilterParams {
+        level: [level[0] as u8, level[1] as u8, level[2] as u8, level[3] as u8],
+        sharpness: sharpness as u8,
+    }
 }

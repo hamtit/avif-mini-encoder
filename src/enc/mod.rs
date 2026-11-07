@@ -97,10 +97,7 @@ impl Contexts {
     fn new(mi_cols: usize, mi_rows: usize) -> Contexts {
         let w = mi_cols + 32;
         let h = mi_rows + 32;
-        Contexts {
-            above_ent: [vec![0; w], vec![0; w], vec![0; w]],
-            left_ent: [vec![0; h], vec![0; h], vec![0; h]],
-        }
+        Contexts { above_ent: [vec![0; w], vec![0; w], vec![0; w]], left_ent: [vec![0; h], vec![0; h], vec![0; h]] }
     }
 }
 
@@ -462,7 +459,11 @@ impl Encoder {
             }
             for sc in 0..sb_cols {
                 let dq = if use_deltaq { Some(&mut cur_q) } else { None };
-                let cdef_idx = if fh.cdef.is_some() { Some(self.cdef_idx.get(sr * sb_cols + sc).copied().unwrap_or(0)) } else { None };
+                let cdef_idx = if fh.cdef.is_some() {
+                    Some(self.cdef_idx.get(sr * sb_cols + sc).copied().unwrap_or(0))
+                } else {
+                    None
+                };
                 if crate::debug_flag("AV1_TRACE") {
                     let mut t = crate::ec::Tracing(&mut sw);
                     self.write_sb(&mut t, &mut cdf, &mut wctx, &sbs[i], sr * 16, sc * 16, dq, cdef_idx);
@@ -503,7 +504,14 @@ impl Encoder {
         m
     }
 
-    fn encode_sb(&mut self, s: &mut search::SearchState, mi_row: usize, mi_col: usize, qindex: u8, dec: &mut Decisions) {
+    fn encode_sb(
+        &mut self,
+        s: &mut search::SearchState,
+        mi_row: usize,
+        mi_col: usize,
+        qindex: u8,
+        dec: &mut Decisions,
+    ) {
         s.sb_q = qindex;
         s.quant = self.quant(qindex);
         s.rdmult = self.rd_mult(qindex) * self.sb_rdmult_modifier(mi_row, mi_col) / 128;

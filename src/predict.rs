@@ -2,9 +2,9 @@
 
 mod cfl;
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod direction_tests;
+#[cfg(test)]
+mod tests;
 pub(crate) use cfl::{ac as cfl_ac, sse_all as cfl_sse_all};
 
 // Keep one arithmetic implementation; inline it into an AVX2 context so LLVM
@@ -254,7 +254,17 @@ pub fn predict(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn directional(dst: &mut [u8], dst_stride: usize, w: usize, h: usize, above_data: &[u8], left_data: &[u8], p_angle: i32, ua: usize, ul: usize) {
+fn directional(
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    above_data: &[u8],
+    left_data: &[u8],
+    p_angle: i32,
+    ua: usize,
+    ul: usize,
+) {
     // Indexing helpers: index -2.. relative to EDGE_OFF.
     let above = |i: isize| above_data[(EDGE_OFF as isize + i) as usize] as i32;
     let left = |i: isize| left_data[(EDGE_OFF as isize + i) as usize] as i32;
@@ -482,7 +492,8 @@ fn filter_edge(p: &mut [u8], sz: usize, strength: usize) {
     edge[sz + 3] = p[sz - 1];
     let (e0, e1, e2, e3, e4) = (&edge[0..], &edge[1..], &edge[2..], &edge[3..], &edge[4..]);
     for i in 1..sz {
-        let s = e0[i] as i32 * k[0] + e1[i] as i32 * k[1] + e2[i] as i32 * k[2] + e3[i] as i32 * k[3] + e4[i] as i32 * k[4];
+        let s =
+            e0[i] as i32 * k[0] + e1[i] as i32 * k[1] + e2[i] as i32 * k[2] + e3[i] as i32 * k[3] + e4[i] as i32 * k[4];
         p[i] = ((s + 8) >> 4) as u8;
     }
 }

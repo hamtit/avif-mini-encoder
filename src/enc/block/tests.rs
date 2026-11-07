@@ -22,7 +22,6 @@ fn residual_matches_reference() {
     }
 }
 
-
 #[test]
 fn distortion_matches_reference() {
     let mut seed = 123u32;
@@ -46,11 +45,7 @@ fn distortion_matches_reference() {
                     }
                     _ => (seed % 131071) as i32 - 65535,
                 };
-                dq[i] = if pattern == 0 {
-                    0
-                } else {
-                    (seed.rotate_left(13) % 65536) as i32 - 32768
-                };
+                dq[i] = if pattern == 0 { 0 } else { (seed.rotate_left(13) % 65536) as i32 - 32768 };
                 wt[i] = match pattern {
                     0 => 0,
                     1 => 255,
@@ -81,10 +76,7 @@ fn distortion_matches_reference() {
                     #[cfg(target_arch = "x86_64")]
                     if std::arch::is_x86_feature_detected!("avx2") {
                         // SAFETY: CPU support was checked above.
-                        assert_eq!(
-                            unsafe { tx_dist_avx2(&t, &dq, n, scale, weights) },
-                            expected
-                        );
+                        assert_eq!(unsafe { tx_dist_avx2(&t, &dq, n, scale, weights) }, expected);
                     }
                 }
             }

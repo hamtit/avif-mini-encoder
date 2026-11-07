@@ -1,7 +1,7 @@
 // Translated from libaom 3.15.1 (BSD-2-Clause): av1_inv_txfm1d.c / av1_fwd_txfm1d.c butterfly transforms.
 // Do not edit.
 #![allow(clippy::all)]
-use super::lane::{Lane, clamp, half_btf, cospi_arr};
+use super::lane::{Lane, clamp, cospi_arr, half_btf};
 
 #[inline(always)]
 pub fn idct4<V: Lane>(input: &[V], output: &mut [V], cos_bit: i8, stage_range: &[i8]) {
