@@ -189,7 +189,15 @@ pub fn encode_av1_threads(
     if width == 0 || height == 0 || width > 65536 || height > 65536 {
         return Err(Error(format!("unsupported size {width}x{height}")));
     }
-    // Validate the planes up front so a short buffer is an error, not a panic.
+    // Only one tile is written: the frame must fit AV1's single-tile limits
+    // (4096 wide, 4096 * 2304 samples).
+    let mi_cols = 2 * width.div_ceil(8);
+    let mi_rows = 2 * height.div_ceil(8);
+    if obu::tile_limits(mi_cols, mi_rows).min_tiles_log2 > 0 {
+        return Err(Error(format!("{width}x{height} needs more than one tile, which is not implemented")));
+    }
+    // Validate the planes so a short buffer is an error, not a panic. This runs
+    // after the size limits, so the products below cannot overflow.
     let (ssx, ssy) = if chroma == Chroma::Yuv444 { (0, 0) } else { (1, 1) };
     let (cw, ch) = ((width + ssx) >> ssx, (height + ssy) >> ssy);
     let expected: &[usize] = if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
@@ -200,13 +208,6 @@ pub fn encode_av1_threads(
         if plane.len() != len {
             return Err(Error(format!("plane {i} has {} bytes, expected {len}", plane.len())));
         }
-    }
-    // Only one tile is written: the frame must fit AV1's single-tile limits
-    // (4096 wide, 4096 * 2304 samples).
-    let mi_cols = 2 * width.div_ceil(8);
-    let mi_rows = 2 * height.div_ceil(8);
-    if obu::tile_limits(mi_cols, mi_rows).min_tiles_log2 > 0 {
-        return Err(Error(format!("{width}x{height} needs more than one tile, which is not implemented")));
     }
     if chroma != Chroma::Yuv444
         && chroma != Chroma::Mono
