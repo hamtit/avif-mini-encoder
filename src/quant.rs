@@ -92,13 +92,29 @@ pub fn quantize_fp(
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
-unsafe fn quantize_fp_avx2(coeff: &[i32], q: &PlaneQuant, tx: TxSize, tx_type: TxType, scan: &[u16], qcoeff: &mut [i32], dqcoeff: &mut [i32]) -> usize {
+unsafe fn quantize_fp_avx2(
+    coeff: &[i32],
+    q: &PlaneQuant,
+    tx: TxSize,
+    tx_type: TxType,
+    scan: &[u16],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> usize {
     quantize_fp_scalar(coeff, q, tx, tx_type, scan, qcoeff, dqcoeff)
 }
 
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn quantize_fp_scalar(coeff: &[i32], q: &PlaneQuant, tx: TxSize, tx_type: TxType, scan: &[u16], qcoeff: &mut [i32], dqcoeff: &mut [i32]) -> usize {
+fn quantize_fp_scalar(
+    coeff: &[i32],
+    q: &PlaneQuant,
+    tx: TxSize,
+    tx_type: TxType,
+    scan: &[u16],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> usize {
     let n = scan.len();
     let log_scale = tx_scale(tx);
     let rounding = [

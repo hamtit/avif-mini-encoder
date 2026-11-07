@@ -2,9 +2,9 @@
 
 mod cfl;
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod direction_tests;
+#[cfg(test)]
+mod tests;
 pub(crate) use cfl::{ac as cfl_ac, sse_all as cfl_sse_all};
 
 // Keep one arithmetic implementation; inline it into an AVX2 context so LLVM
@@ -87,6 +87,7 @@ pub struct IntraParams {
 
 /// Predict a `tx` sized block at `(x, y)` of `plane` (`frame` / `stride`)
 /// into `dst`.
+#[allow(clippy::too_many_arguments)]
 pub fn predict(
     frame: &[u8],
     stride: usize,
@@ -254,7 +255,17 @@ pub fn predict(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn directional(dst: &mut [u8], dst_stride: usize, w: usize, h: usize, above_data: &[u8], left_data: &[u8], p_angle: i32, ua: usize, ul: usize) {
+fn directional(
+    dst: &mut [u8],
+    dst_stride: usize,
+    w: usize,
+    h: usize,
+    above_data: &[u8],
+    left_data: &[u8],
+    p_angle: i32,
+    ua: usize,
+    ul: usize,
+) {
     // Indexing helpers: index -2.. relative to EDGE_OFF.
     let above = |i: isize| above_data[(EDGE_OFF as isize + i) as usize] as i32;
     let left = |i: isize| left_data[(EDGE_OFF as isize + i) as usize] as i32;
@@ -382,16 +393,24 @@ unsafe fn interpolate_avx2<const STEP: usize>(out: &mut [u8], edge: &[u8], shift
     while i + 8 <= out.len() {
         let pos = i * STEP;
         let (a, b) = if STEP == 1 {
+            // SAFETY: AVX2 is enabled for this function. The caller cut `edge` to
+            // `(out.len() - 1) * STEP + 2` bytes and `i + 8 <= out.len()`, so the 8-byte loads at
+            // `pos = i` and `pos + 1` end at index `i + 8 < edge.len()`.
             let a = unsafe { _mm_loadl_epi64(edge.as_ptr().add(pos).cast()) };
+            // SAFETY: as above.
             let b = unsafe { _mm_loadl_epi64(edge.as_ptr().add(pos + 1).cast()) };
             (_mm_cvtepu8_epi16(a), _mm_cvtepu8_epi16(b))
         } else {
+            // SAFETY: AVX2 is enabled for this function. With `pos = 2 * i` and `i + 8 <= out.len()`,
+            // the 16-byte load ends at index `2 * i + 15 <= 2 * out.len() - 1 = edge.len() - 1`.
             let pairs = unsafe { _mm_loadu_si128(edge.as_ptr().add(pos).cast()) };
             (_mm_and_si128(pairs, _mm_set1_epi16(255)), _mm_srli_epi16::<8>(pairs))
         };
         let sum = _mm_add_epi16(_mm_mullo_epi16(a, wa), _mm_mullo_epi16(b, wb));
         let rounded = _mm_srli_epi16::<5>(_mm_add_epi16(sum, _mm_set1_epi16(16)));
         let pixels = _mm_packus_epi16(rounded, rounded);
+        // SAFETY: AVX2 is enabled for this function; the 8-byte store covers `out[i..i + 8]`
+        // and `i + 8 <= out.len()`.
         unsafe { _mm_storel_epi64(out.as_mut_ptr().add(i).cast(), pixels) };
         i += 8;
     }
@@ -482,7 +501,8 @@ fn filter_edge(p: &mut [u8], sz: usize, strength: usize) {
     edge[sz + 3] = p[sz - 1];
     let (e0, e1, e2, e3, e4) = (&edge[0..], &edge[1..], &edge[2..], &edge[3..], &edge[4..]);
     for i in 1..sz {
-        let s = e0[i] as i32 * k[0] + e1[i] as i32 * k[1] + e2[i] as i32 * k[2] + e3[i] as i32 * k[3] + e4[i] as i32 * k[4];
+        let s =
+            e0[i] as i32 * k[0] + e1[i] as i32 * k[1] + e2[i] as i32 * k[2] + e3[i] as i32 * k[3] + e4[i] as i32 * k[4];
         p[i] = ((s + 8) >> 4) as u8;
     }
 }

@@ -1,7 +1,11 @@
 //! A pure-Rust AVIF encoder for still images, modelled on libaom's all-intra
 //! mode as configured by libheif / libvips for AVIF (tune IQ).
 
+// Index loops mirror the layout of the C reference code (libaom) the kernels are ported from.
+#![allow(clippy::needless_range_loop)]
+
 mod avail;
+mod error;
 
 /// Whether AVX2 can be used (checked once).
 #[inline]
@@ -20,7 +24,10 @@ pub(crate) fn has_avx2() -> bool {
 pub(crate) fn debug_flag(name: &str) -> bool {
     use std::sync::OnceLock;
     static FLAGS: OnceLock<Vec<String>> = OnceLock::new();
-    FLAGS.get_or_init(|| std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("AV1_")).collect()).iter().any(|k| k == name)
+    FLAGS
+        .get_or_init(|| std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with("AV1_")).collect())
+        .iter()
+        .any(|k| k == name)
 }
 mod cdef;
 mod cdf;
@@ -37,6 +44,7 @@ mod quant;
 mod tables;
 mod txfm;
 
+pub use error::Error;
 pub use obu::{ColorDesc, SequenceHeader};
 
 use enc::FrameConfig;
@@ -141,18 +149,6 @@ pub(crate) fn frame_config(qindex: u8, chroma: Chroma, tune: Tune, speed: u8) ->
 /// Version of this crate (`CARGO_PKG_VERSION`).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Encoding error.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Error(pub String);
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for Error {}
-
 /// Encode planar 8-bit samples to AV1 OBUs (sequence header + frame).
 /// Returns the OBUs and the reconstructed planes.
 #[allow(clippy::too_many_arguments)]
@@ -187,33 +183,34 @@ pub fn encode_av1_threads(
     threads: usize,
 ) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
     if width == 0 || height == 0 || width > 65536 || height > 65536 {
-        return Err(Error(format!("unsupported size {width}x{height}")));
+        return Err(Error::InvalidDimensions { width, height });
     }
     // Only one tile is written: the frame must fit AV1's single-tile limits
     // (4096 wide, 4096 * 2304 samples).
     let mi_cols = 2 * width.div_ceil(8);
     let mi_rows = 2 * height.div_ceil(8);
     if obu::tile_limits(mi_cols, mi_rows).min_tiles_log2 > 0 {
-        return Err(Error(format!("{width}x{height} needs more than one tile, which is not implemented")));
+        return Err(Error::MultiTileUnsupported { width, height });
     }
     // Validate the planes so a short buffer is an error, not a panic. This runs
     // after the size limits, so the products below cannot overflow.
     let (ssx, ssy) = if chroma == Chroma::Yuv444 { (0, 0) } else { (1, 1) };
     let (cw, ch) = ((width + ssx) >> ssx, (height + ssy) >> ssy);
-    let expected: &[usize] = if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
+    let expected: &[usize] =
+        if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
     if planes.len() != expected.len() {
-        return Err(Error(format!("expected {} plane(s), got {}", expected.len(), planes.len())));
+        return Err(Error::PlaneCount { expected: expected.len(), actual: planes.len() });
     }
     for (i, (plane, &len)) in planes.iter().zip(expected).enumerate() {
         if plane.len() != len {
-            return Err(Error(format!("plane {i} has {} bytes, expected {len}", plane.len())));
+            return Err(Error::PlaneSize { plane: i, expected: len, actual: plane.len() });
         }
     }
     if chroma != Chroma::Yuv444
         && chroma != Chroma::Mono
         && matches!(color, Some(ColorDesc { primaries: 1, transfer: 13, matrix: 0 }))
     {
-        return Err(Error("identity matrix (sRGB) requires 4:4:4".into()));
+        return Err(Error::IdentityRequires444);
     }
     let mut cfg = frame_config(qindex, chroma, tune, speed);
     cfg.threads = threads.max(1);
@@ -269,13 +266,19 @@ pub fn encode_av1_pair(color: EncodeJob, alpha: EncodeJob, threads: usize) -> (E
     std::thread::scope(|s| {
         let a = s.spawn(|| run(alpha, 1));
         let c = run(color, threads - 1);
-        (c, a.join().unwrap_or_else(|_| Err(Error("alpha encoder panicked".into()))))
+        (c, a.join().unwrap_or(Err(Error::AlphaEncoderPanicked)))
     })
 }
 
 /// Benchmark helper: BT.601 full range sRGB YUV at a given qindex, tune IQ.
 #[doc(hidden)]
-pub fn encode_yuv_for_bench(w: usize, h: usize, yuv: &[Vec<u8>], ss: usize, qindex: u8) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
+pub fn encode_yuv_for_bench(
+    w: usize,
+    h: usize,
+    yuv: &[Vec<u8>],
+    ss: usize,
+    qindex: u8,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
     let planes: Vec<&[u8]> = yuv.iter().map(|p| p.as_slice()).collect();
     encode_av1(
         &planes,
@@ -333,7 +336,7 @@ mod tests {
         let (w, h) = (4104, 8);
         let y = flat(w, h);
         let r = encode_av1(&[&y], w, h, Chroma::Mono, None, true, 100, Tune::Psnr, 5);
-        assert!(r.is_err());
+        assert_eq!(r.unwrap_err(), Error::MultiTileUnsupported { width: w, height: h });
         let (w, h) = (4096, 8);
         let y = flat(w, h);
         assert!(encode_av1(&[&y], w, h, Chroma::Mono, None, true, 100, Tune::Psnr, 5).is_ok());
@@ -347,8 +350,28 @@ mod tests {
         let a: Vec<u8> = (0..w * h).map(|i| if (i % w) < 30 { 255 } else { (i % 97) as u8 }).collect();
         let col = [&y[..], &c[..], &c[..]];
         let alp = [&a[..]];
-        let cj = EncodeJob { planes: &col, width: w, height: h, chroma: Chroma::Yuv420, color: None, full_range: true, qindex: 120, tune: Tune::Iq, speed: 5 };
-        let aj = EncodeJob { planes: &alp, width: w, height: h, chroma: Chroma::Mono, color: None, full_range: true, qindex: 90, tune: Tune::Psnr, speed: 5 };
+        let cj = EncodeJob {
+            planes: &col,
+            width: w,
+            height: h,
+            chroma: Chroma::Yuv420,
+            color: None,
+            full_range: true,
+            qindex: 120,
+            tune: Tune::Iq,
+            speed: 5,
+        };
+        let aj = EncodeJob {
+            planes: &alp,
+            width: w,
+            height: h,
+            chroma: Chroma::Mono,
+            color: None,
+            full_range: true,
+            qindex: 90,
+            tune: Tune::Psnr,
+            speed: 5,
+        };
         let seq_c = encode_av1(cj.planes, w, h, cj.chroma, None, true, 120, Tune::Iq, 5).unwrap();
         let seq_a = encode_av1(aj.planes, w, h, aj.chroma, None, true, 90, Tune::Psnr, 5).unwrap();
         for threads in [1, 2, 4] {
@@ -364,12 +387,33 @@ mod tests {
         let c = flat(8, 8);
         let run = |planes: &[&[u8]], chroma| encode_av1(planes, 16, 16, chroma, None, true, 100, Tune::Iq, 5);
         assert!(run(&[&y, &c, &c], Chroma::Yuv420).is_ok());
-        assert!(run(&[&y[..255], &c, &c], Chroma::Yuv420).is_err());
-        assert!(run(&[&y, &c[..63], &c], Chroma::Yuv420).is_err());
-        assert!(run(&[&y, &c, &c], Chroma::Yuv444).is_err());
-        assert!(run(&[&y], Chroma::Yuv420).is_err());
-        assert!(run(&[&y, &y], Chroma::Mono).is_err());
+        let err = |planes: &[&[u8]], chroma| run(planes, chroma).unwrap_err();
+        assert_eq!(
+            err(&[&y[..255], &c, &c], Chroma::Yuv420),
+            Error::PlaneSize { plane: 0, expected: 256, actual: 255 }
+        );
+        assert_eq!(err(&[&y, &c[..63], &c], Chroma::Yuv420), Error::PlaneSize { plane: 1, expected: 64, actual: 63 });
+        assert_eq!(err(&[&y, &c, &c], Chroma::Yuv444), Error::PlaneSize { plane: 1, expected: 256, actual: 64 });
+        assert_eq!(err(&[&y], Chroma::Yuv420), Error::PlaneCount { expected: 3, actual: 1 });
+        assert_eq!(err(&[&y, &y], Chroma::Mono), Error::PlaneCount { expected: 1, actual: 2 });
         assert!(run(&[&y], Chroma::Mono).is_ok());
+    }
+
+    #[test]
+    fn rejects_unsupported_sizes() {
+        let r = |w, h| encode_av1(&[], w, h, Chroma::Mono, None, true, 100, Tune::Iq, 5).unwrap_err();
+        assert_eq!(r(0, 16), Error::InvalidDimensions { width: 0, height: 16 });
+        assert_eq!(r(16, 65537), Error::InvalidDimensions { width: 16, height: 65537 });
+    }
+
+    #[test]
+    fn error_messages_are_stable() {
+        assert_eq!(Error::InvalidDimensions { width: 0, height: 4 }.to_string(), "unsupported size 0x4");
+        assert_eq!(Error::PlaneCount { expected: 3, actual: 1 }.to_string(), "expected 3 plane(s), got 1");
+        assert_eq!(
+            Error::PlaneSize { plane: 1, expected: 64, actual: 63 }.to_string(),
+            "plane 1 has 63 bytes, expected 64"
+        );
     }
 
     #[test]
@@ -382,6 +426,7 @@ mod tests {
         let y = flat(16, 16);
         let c = flat(8, 8);
         let srgb = Some(ColorDesc { primaries: 1, transfer: 13, matrix: 0 });
-        assert!(encode_av1(&[&y, &c, &c], 16, 16, Chroma::Yuv420, srgb, true, 100, Tune::Iq, 5).is_err());
+        let r = encode_av1(&[&y, &c, &c], 16, 16, Chroma::Yuv420, srgb, true, 100, Tune::Iq, 5);
+        assert_eq!(r.unwrap_err(), Error::IdentityRequires444);
     }
 }

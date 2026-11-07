@@ -1,6 +1,6 @@
 [package]
 name = "avif-mini-encoder"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "Pure-Rust AVIF (AV1 still picture) encoder modelled on libaom's all-intra mode with tune IQ"
 license = "BSD-2-Clause"
@@ -17,3 +17,13 @@ debug = 1
 
 [profile.test]
 opt-level = 3
+
+# Shared lint policy: identical in every sibling repository (readability-rs,
+# avif-mini-encoder, imgconv-rs, jxl-mini-encoder). Keep the copies in sync.
+[lints.rust]
+# Even inside an `unsafe fn`, each unsafe operation needs its own `unsafe {}`.
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+# Every `unsafe {}` block needs a `// SAFETY:` comment saying why it is sound.
+undocumented_unsafe_blocks = "warn"

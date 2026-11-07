@@ -57,7 +57,11 @@ impl Pad {
             }
             for (c, v) in row.iter_mut().enumerate() {
                 let x = self.x0 + c as isize;
-                *v = if x < 0 || x >= src.w { VERY_LARGE as i16 } else { src.p.data[y as usize * src.p.stride + x as usize] as i16 };
+                *v = if x < 0 || x >= src.w {
+                    VERY_LARGE as i16
+                } else {
+                    src.p.data[y as usize * src.p.stride + x as usize] as i16
+                };
             }
         }
     }
@@ -273,10 +277,7 @@ fn search_rows<const W: usize>(
         [off(DIRS[(dir + 2) & 7][0]), off(DIRS[(dir + 6) & 7][0])],
         [off(DIRS[(dir + 2) & 7][1]), off(DIRS[(dir + 6) & 7][1])],
     ];
-    let soff0 = [
-        [off(DIRS[2][0]), off(DIRS[6][0])],
-        [off(DIRS[2][1]), off(DIRS[6][1])],
-    ];
+    let soff0 = [[off(DIRS[2][0]), off(DIRS[6][0])], [off(DIRS[2][1]), off(DIRS[6][1])]];
     let pshift: [i32; 5] = core::array::from_fn(|i| if ts[i] == 0 { 0 } else { (damping - msb(ts[i])).max(0) });
     let sec_taps = [2i32, 1];
     let buf = &src.buf;
@@ -366,7 +367,19 @@ fn search_rows<const W: usize>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn search_block(src: &Pad, srcpix: &[u8], sstride: usize, x0: usize, y0: usize, bw: usize, bh: usize, ts: &[i32; 5], dir: usize, damping: i32, err: &mut [u64; TOTAL]) {
+fn search_block(
+    src: &Pad,
+    srcpix: &[u8],
+    sstride: usize,
+    x0: usize,
+    y0: usize,
+    bw: usize,
+    bh: usize,
+    ts: &[i32; 5],
+    dir: usize,
+    damping: i32,
+    err: &mut [u64; TOTAL],
+) {
     #[cfg(target_arch = "x86_64")]
     if crate::has_avx2() {
         // SAFETY: AVX2 support was checked at runtime.
@@ -383,7 +396,19 @@ fn search_block(src: &Pad, srcpix: &[u8], sstride: usize, x0: usize, y0: usize, 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
-unsafe fn search_block_avx2(src: &Pad, srcpix: &[u8], sstride: usize, x0: usize, y0: usize, bw: usize, bh: usize, ts: &[i32; 5], dir: usize, damping: i32, err: &mut [u64; TOTAL]) {
+unsafe fn search_block_avx2(
+    src: &Pad,
+    srcpix: &[u8],
+    sstride: usize,
+    x0: usize,
+    y0: usize,
+    bw: usize,
+    bh: usize,
+    ts: &[i32; 5],
+    dir: usize,
+    damping: i32,
+    err: &mut [u64; TOTAL],
+) {
     if bw == 8 {
         search_rows::<8>(src, srcpix, sstride, x0, y0, bh, ts, dir, damping, err)
     } else {
@@ -453,6 +478,9 @@ const PRICONV: [i32; 5] = [0, 2, 4, 8, 14];
 const SECCONV: [i32; 2] = [0, 2];
 const TOTAL: usize = 10;
 
+/// One filter block's search result: (row, column, error totals per plane type, chosen strengths).
+type FbSearch = (usize, usize, [[u64; TOTAL]; 2], Vec<(usize, i32)>);
+
 fn sec_value(code: i32) -> i32 {
     code + (code == 3) as i32
 }
@@ -480,7 +508,7 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
     // are searched in parallel; results are gathered in raster order.
     let thr = e.cfg.threads;
     let ee: &Encoder = e;
-    let rows: Vec<Vec<(usize, usize, [[u64; TOTAL]; 2], Vec<(usize, i32)>)>> = crate::parallel::par_map(nvfb, thr, |fbr| {
+    let rows: Vec<Vec<FbSearch>> = crate::parallel::par_map(nvfb, thr, |fbr| {
         let mut list = Vec::new();
         let mut pad = Pad::new();
         let mut res = Vec::new();
@@ -489,7 +517,8 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
             if list.is_empty() {
                 continue;
             }
-            let dirs: Vec<(usize, i32)> = list.iter().map(|&(by, bx)| find_dir(&pre[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
+            let dirs: Vec<(usize, i32)> =
+                list.iter().map(|&(by, bx)| find_dir(&pre[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
             let mut m = [[0u64; TOTAL]; 2];
             for p in 0..np {
                 let (sx, sy) = if p == 0 { (0, 0) } else { (ee.ssx, ee.ssy) };
@@ -503,9 +532,22 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
                 let mut err = [0u64; TOTAL];
                 for (k, &(by, bx)) in list.iter().enumerate() {
                     let (dir, var) = dirs[k];
-                    let ts: [i32; 5] = core::array::from_fn(|i| if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] });
+                    let ts: [i32; 5] =
+                        core::array::from_fn(|i| if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] });
                     let (x0, y0) = (ox + bx * bw, oy + by * bh);
-                    search_block(&pad, &s.data[y0 * s.stride + x0..], s.stride, x0, y0, bw, bh, &ts, dir, damp, &mut err);
+                    search_block(
+                        &pad,
+                        &s.data[y0 * s.stride + x0..],
+                        s.stride,
+                        x0,
+                        y0,
+                        bw,
+                        bh,
+                        &ts,
+                        dir,
+                        damp,
+                        &mut err,
+                    );
                 }
                 for gi in 0..TOTAL {
                     m[(p > 0) as usize][gi] += err[gi];
@@ -615,7 +657,8 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
         let st = strengths[choice[s]];
         let dirs = &all_dirs[s];
         for p in 0..np {
-            let (pri, sec) = if p == 0 { (st.0 as i32, sec_value(st.1 as i32)) } else { (st.2 as i32, sec_value(st.3 as i32)) };
+            let (pri, sec) =
+                if p == 0 { (st.0 as i32, sec_value(st.1 as i32)) } else { (st.2 as i32, sec_value(st.3 as i32)) };
             if pri == 0 && sec == 0 {
                 continue;
             }
@@ -664,7 +707,13 @@ fn search_one(lev: &mut [usize; 8], nb: usize, mse: &[[u64; TOTAL]], sb_count: u
     best_tot
 }
 
-fn search_one_dual(l0: &mut [usize; 8], l1: &mut [usize; 8], nb: usize, mse: &[Vec<[u64; TOTAL]>; 2], sb_count: usize) -> u64 {
+fn search_one_dual(
+    l0: &mut [usize; 8],
+    l1: &mut [usize; 8],
+    nb: usize,
+    mse: &[Vec<[u64; TOTAL]>; 2],
+    sb_count: usize,
+) -> u64 {
     let mut tot = [[0u64; TOTAL]; TOTAL];
     for i in 0..sb_count {
         let mut best = u64::MAX >> 1;
@@ -692,7 +741,13 @@ fn search_one_dual(l0: &mut [usize; 8], l1: &mut [usize; 8], nb: usize, mse: &[V
     best_tot
 }
 
-fn joint_search_dual(l0: &mut [usize; 8], l1: &mut [usize; 8], nb: usize, mse: &[Vec<[u64; TOTAL]>; 2], sb_count: usize) -> u64 {
+fn joint_search_dual(
+    l0: &mut [usize; 8],
+    l1: &mut [usize; 8],
+    nb: usize,
+    mse: &[Vec<[u64; TOTAL]>; 2],
+    sb_count: usize,
+) -> u64 {
     let mut t = 0;
     for i in 0..nb {
         t = search_one_dual(l0, l1, i, mse, sb_count);

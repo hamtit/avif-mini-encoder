@@ -2,7 +2,17 @@ use super::*;
 
 // Independent per-pixel reference, before splitting zone 2 into row segments.
 #[allow(clippy::too_many_arguments)]
-fn reference(dst: &mut [u8], stride: usize, w: usize, h: usize, above: &[u8], left: &[u8], angle: i32, ua: usize, ul: usize) {
+fn reference(
+    dst: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    above: &[u8],
+    left: &[u8],
+    angle: i32,
+    ua: usize,
+    ul: usize,
+) {
     let edge = |data: &[u8], base: i32, shift: i32| {
         let base = (EDGE_OFF as i32 + base) as usize;
         (data[base] as i32 * (32 - shift) + data[base + 1] as i32 * shift + 16) >> 5
@@ -14,8 +24,11 @@ fn reference(dst: &mut [u8], stride: usize, w: usize, h: usize, above: &[u8], le
                 let x = (r as i32 + 1) * dx;
                 let base = (x >> (6 - ua)) + ((c as i32) << ua);
                 let max = ((w + h - 1) << ua) as i32;
-                if base < max { edge(above, base, ((x << ua) & 63) >> 1) }
-                else { above[EDGE_OFF + max as usize] as i32 }
+                if base < max {
+                    edge(above, base, ((x << ua) & 63) >> 1)
+                } else {
+                    above[EDGE_OFF + max as usize] as i32
+                }
             } else if angle < 180 && angle != 90 {
                 let dx = DR_INTRA_DERIVATIVE[(180 - angle) as usize] as i32;
                 let dy = DR_INTRA_DERIVATIVE[(angle - 90) as usize] as i32;
@@ -32,10 +45,12 @@ fn reference(dst: &mut [u8], stride: usize, w: usize, h: usize, above: &[u8], le
                 let y = (c as i32 + 1) * dy;
                 let base = (y >> (6 - ul)) + ((r as i32) << ul);
                 let max = ((w + h - 1) << ul) as i32;
-                if base < max { edge(left, base, ((y << ul) & 63) >> 1) }
-                else { left[EDGE_OFF + max as usize] as i32 }
-            } else if angle == 90 { above[EDGE_OFF + c] as i32 }
-            else { left[EDGE_OFF + r] as i32 };
+                if base < max { edge(left, base, ((y << ul) & 63) >> 1) } else { left[EDGE_OFF + max as usize] as i32 }
+            } else if angle == 90 {
+                above[EDGE_OFF + c] as i32
+            } else {
+                left[EDGE_OFF + r] as i32
+            };
             dst[r * stride + c] = value as u8;
         }
     }
@@ -48,12 +63,20 @@ fn directional_matches_per_pixel_reference() {
             for ua in 0..=usize::from(w + h <= 64) {
                 for ul in 0..=usize::from(w + h <= 64) {
                     for pattern in 0..5 {
-                        let make_edge = |offset: usize| std::array::from_fn::<_, EDGE_LEN, _>(|i| match pattern {
-                            0 => 0,
-                            1 => 255,
-                            2 => if i % 2 == 0 { 0 } else { 255 },
-                            _ => ((i * 131 + pattern * 71 + offset) % 256) as u8,
-                        });
+                        let make_edge = |offset: usize| {
+                            std::array::from_fn::<_, EDGE_LEN, _>(|i| match pattern {
+                                0 => 0,
+                                1 => 255,
+                                2 => {
+                                    if i % 2 == 0 {
+                                        0
+                                    } else {
+                                        255
+                                    }
+                                }
+                                _ => ((i * 131 + pattern * 71 + offset) % 256) as u8,
+                            })
+                        };
                         let above = make_edge(0);
                         let left = make_edge(19);
                         for mode in V_PRED..=D67_PRED {

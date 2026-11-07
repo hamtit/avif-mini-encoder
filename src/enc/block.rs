@@ -188,6 +188,12 @@ impl Scratch {
     }
 }
 
+impl Default for Scratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn residual(src: &[u8], ss: usize, pred: &[u8], w: usize, h: usize, out: &mut [i16]) {
     #[cfg(target_arch = "x86_64")]
     if crate::has_avx2() {
@@ -296,7 +302,8 @@ impl Encoder {
         } else {
             let (bw, bh) = (bp.bsize.w4(), bp.bsize.h4());
             let up = if self.ssy == 1 && bh < 2 { r >= 1 && r - 1 > self.tile.mi_row_start } else { self.avail_up(r) };
-            let left = if self.ssx == 1 && bw < 2 { c >= 1 && c - 1 > self.tile.mi_col_start } else { self.avail_left(c) };
+            let left =
+                if self.ssx == 1 && bw < 2 { c >= 1 && c - 1 > self.tile.mi_col_start } else { self.avail_left(c) };
             let br = r - (r & self.ssy);
             let bc = c - (c & self.ssx);
             let a = up && is_smooth(self.mi(br - 1, bc + self.ssx).uv_mode);
@@ -349,7 +356,13 @@ impl Encoder {
         let plane_mi_w = (self.mi_cols * 4) >> ssx;
         let plane_mi_h = (self.mi_rows * 4) >> ssy;
         let (txw, txh) = (tx.width(), tx.height());
-        let mode = if plane == 0 { modes.y_mode } else if modes.uv_mode == UV_CFL_PRED { DC_PRED } else { modes.uv_mode };
+        let mode = if plane == 0 {
+            modes.y_mode
+        } else if modes.uv_mode == UV_CFL_PRED {
+            DC_PRED
+        } else {
+            modes.uv_mode
+        };
         let angle = if plane == 0 { modes.angle_y } else { modes.angle_uv } as i32;
         let fi = if plane == 0 { modes.filter_intra } else { None };
         let ip = IntraParams {
@@ -396,26 +409,26 @@ impl Encoder {
             1
         } else {
             match search {
-            TxSearch::Fixed(t) => {
-                cands[0] = t;
-                1
-            }
-            TxSearch::Pair(t) => {
-                cands[0] = DCT_DCT;
-                cands[1] = t;
-                if t == DCT_DCT || plane > 0 { 1 } else { 2 }
-            }
-            TxSearch::Search { .. } => {
-                if crate::debug_flag("AV1_DCT_ONLY") {
-                    cands[0] = DCT_DCT;
-                    1
-                } else if plane == 0 {
-                    tx_type_candidates(tx, intra_dir, &mut cands)
-                } else {
-                    cands[0] = uv_tx_type(modes.uv_mode, tx);
+                TxSearch::Fixed(t) => {
+                    cands[0] = t;
                     1
                 }
-            }
+                TxSearch::Pair(t) => {
+                    cands[0] = DCT_DCT;
+                    cands[1] = t;
+                    if t == DCT_DCT || plane > 0 { 1 } else { 2 }
+                }
+                TxSearch::Search { .. } => {
+                    if crate::debug_flag("AV1_DCT_ONLY") {
+                        cands[0] = DCT_DCT;
+                        1
+                    } else if plane == 0 {
+                        tx_type_candidates(tx, intra_dir, &mut cands)
+                    } else {
+                        cands[0] = uv_tx_type(modes.uv_mode, tx);
+                        1
+                    }
+                }
             }
         };
         // Trellis quantization is off by default: on Kodak (24 images, qindex 30-220) it changed BD-rate
@@ -449,8 +462,7 @@ impl Encoder {
                 let n_left = if have_left { (txh as isize).min(yd + txh as isize).max(0) as usize } else { 0 };
                 let mut av = EdgeAvail { n_top, n_topright: 0, n_left, n_bottomleft: 0 };
                 if need_tr {
-                    let right_available =
-                        bp.mi_col + ((col_off / 4 + tx.w4()) << ssx) < self.tile.mi_col_end;
+                    let right_available = bp.mi_col + ((col_off / 4 + tx.w4()) << ssx) < self.tile.mi_col_end;
                     if has_top_right(
                         tr_bsize,
                         bp.mi_row,
@@ -638,7 +650,8 @@ impl Encoder {
                 // A ranking-only call (no decisions kept) whose plane block is a
                 // single transform block never reads its reconstruction: every
                 // later stage predicts and reconstructs the block again.
-                let recon_unused = s.rank_only && out.is_none() && row_off == 0 && col_off == 0 && txw >= pw && txh >= ph;
+                let recon_unused =
+                    s.rank_only && out.is_none() && row_off == 0 && col_off == 0 && txw >= pw && txh >= ph;
                 if !recon_unused {
                     let rec = &mut self.rec[plane];
                     let stride = rec.stride;
@@ -680,7 +693,16 @@ impl Encoder {
 
     /// Subsampled luma (Q3) for chroma-from-luma, padded to the transform size.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn cfl_luma(&self, bp: &BlockPos, _plane: usize, cx: usize, cy: usize, w: usize, h: usize, out: &mut [i16]) {
+    pub(super) fn cfl_luma(
+        &self,
+        bp: &BlockPos,
+        _plane: usize,
+        cx: usize,
+        cy: usize,
+        w: usize,
+        h: usize,
+        out: &mut [i16],
+    ) {
         let (ssx, ssy) = (self.ssx, self.ssy);
         let lx = cx << ssx;
         let ly = cy << ssy;
@@ -696,7 +718,9 @@ impl Encoder {
             for c in 0..sub_w {
                 let v = if ssx == 1 && ssy == 1 {
                     let o = (ly + 2 * r) * rec.stride + lx + 2 * c;
-                    (rec.data[o] as i16 + rec.data[o + 1] as i16 + rec.data[o + rec.stride] as i16
+                    (rec.data[o] as i16
+                        + rec.data[o + 1] as i16
+                        + rec.data[o + rec.stride] as i16
                         + rec.data[o + rec.stride + 1] as i16)
                         << 1
                 } else {
@@ -715,4 +739,3 @@ impl Encoder {
         }
     }
 }
-

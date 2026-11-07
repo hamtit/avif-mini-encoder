@@ -104,7 +104,15 @@ fn main() {
         height: h,
         mono: np == 1,
         subsampled: ssx == 1,
-        color: if np == 3 { Some(ColorDesc { primaries: 1, transfer: 13, matrix: std::env::var("MATRIX").map(|v| v.parse().unwrap()).unwrap_or(6) }) } else { None },
+        color: if np == 3 {
+            Some(ColorDesc {
+                primaries: 1,
+                transfer: 13,
+                matrix: std::env::var("MATRIX").map(|v| v.parse().unwrap()).unwrap_or(6),
+            })
+        } else {
+            None
+        },
         full_range: true,
         enable_cdef: true,
     };
@@ -118,8 +126,18 @@ fn main() {
         };
         let threads = std::env::var("AV1_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
         let (obus, recon) = avif_mini_encoder::encode_av1_threads(
-            &refs, w, h, chroma, seq.color, true, q, avif_mini_encoder::Tune::Iq, speed, threads,
-        ).unwrap();
+            &refs,
+            w,
+            h,
+            chroma,
+            seq.color,
+            true,
+            q,
+            avif_mini_encoder::Tune::Iq,
+            speed,
+            threads,
+        )
+        .unwrap();
         raw::Output { obus, recon }
     } else {
         raw::encode(cfg, &planes, &seq)

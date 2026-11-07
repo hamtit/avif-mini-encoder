@@ -65,7 +65,10 @@ fn gate_params(speed: u8) -> (f64, u8) {
         _ => (32.0, 16),
     };
     let (ek, em) = *GATE_ENV.get_or_init(|| {
-        (std::env::var("AV1_GATE_K").ok().and_then(|v| v.parse().ok()), std::env::var("AV1_GATE_MAX").ok().and_then(|v| v.parse().ok()))
+        (
+            std::env::var("AV1_GATE_K").ok().and_then(|v| v.parse().ok()),
+            std::env::var("AV1_GATE_MAX").ok().and_then(|v| v.parse().ok()),
+        )
     });
     (ek.unwrap_or(k), em.unwrap_or(m))
 }
@@ -171,7 +174,13 @@ struct Snapshot {
 
 /// Plane regions covered by a block: (x, y, w, h) in pixels, and the entropy
 /// context ranges (x4, w4, y4, h4).
-fn plane_region(e: &Encoder, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize) -> (usize, usize, usize, usize) {
+fn plane_region(
+    e: &Encoder,
+    plane: usize,
+    bsize: BlockSize,
+    mi_row: usize,
+    mi_col: usize,
+) -> (usize, usize, usize, usize) {
     let (sx, sy) = if plane == 0 { (0, 0) } else { (e.ssx, e.ssy) };
     let x = (mi_col >> sx) * 4;
     let y = (mi_row >> sy) * 4;
@@ -369,9 +378,7 @@ impl Encoder {
                         if r >= self.mi_rows || c >= self.mi_cols {
                             continue;
                         }
-                        if rd >= limit
-                            && (!needs_split_rd || (rd as f64) > (rd_none as f64) * RECT_PRUNE_F())
-                        {
+                        if rd >= limit && (!needs_split_rd || (rd as f64) > (rd_none as f64) * RECT_PRUNE_F()) {
                             complete = false;
                             break;
                         }
@@ -404,7 +411,8 @@ impl Encoder {
             }
             if complete && rd < best_rd {
                 best_rd = rd;
-                best_after = Some(self.snapshot(bsize, mi_row, mi_col, best_after.take().or_else(|| s.snapshots.pop())));
+                best_after =
+                    Some(self.snapshot(bsize, mi_row, mi_col, best_after.take().or_else(|| s.snapshots.pop())));
                 std::mem::swap(&mut best_dec, &mut cand);
             }
             s.give(cand);
@@ -425,7 +433,8 @@ impl Encoder {
 
     fn y_mode_ctx(&self, mi_row: usize, mi_col: usize) -> (usize, usize) {
         let a = if self.avail_up(mi_row) { INTRA_MODE_CONTEXT[self.mi(mi_row - 1, mi_col).y_mode as usize] } else { 0 };
-        let l = if self.avail_left(mi_col) { INTRA_MODE_CONTEXT[self.mi(mi_row, mi_col - 1).y_mode as usize] } else { 0 };
+        let l =
+            if self.avail_left(mi_col) { INTRA_MODE_CONTEXT[self.mi(mi_row, mi_col - 1).y_mode as usize] } else { 0 };
         (a, l)
     }
 
@@ -561,7 +570,17 @@ impl Encoder {
         if !fi && is_directional(mode) && p_angle < 90 {
             let right_available = bp.mi_col + (tx.w4() << sx) < self.tile.mi_col_end;
             if crate::avail::has_top_right(
-                tr_bsize, bp.mi_row, bp.mi_col, up, right_available, bp.partition, tx, 0, 0, sx, sy,
+                tr_bsize,
+                bp.mi_row,
+                bp.mi_col,
+                up,
+                right_available,
+                bp.partition,
+                tx,
+                0,
+                0,
+                sx,
+                sy,
             ) {
                 av.n_topright = txw.min(xr).max(0) as usize;
             }
@@ -569,7 +588,17 @@ impl Encoder {
         if !fi && is_directional(mode) && p_angle > 180 {
             let bottom_available = yd > 0 && bp.mi_row + (tx.h4() << sy) < self.tile.mi_row_end;
             if crate::avail::has_bottom_left(
-                tr_bsize, bp.mi_row, bp.mi_col, bottom_available, left, bp.partition, tx, 0, 0, sx, sy,
+                tr_bsize,
+                bp.mi_row,
+                bp.mi_col,
+                bottom_available,
+                left,
+                bp.partition,
+                tx,
+                0,
+                0,
+                sx,
+                sy,
             ) {
                 av.n_bottomleft = txh.min(yd).max(0) as usize;
             }
@@ -726,7 +755,11 @@ impl Encoder {
         // always keeping it gives 3-4% smaller files at equal or better
         // PSNR/SSIM (the split was chosen too often; cause not yet identified)
         // and saves one full candidate evaluation per 64x64 block.
-        if !self.lossless && bsize != BlockSize::B4x4 && max_tx != TxSize::T4x4 && max_tx != TxSize::T64x64 && !dbg("AV1_NO_TXSPLIT")
+        if !self.lossless
+            && bsize != BlockSize::B4x4
+            && max_tx != TxSize::T4x4
+            && max_tx != TxSize::T64x64
+            && !dbg("AV1_NO_TXSPLIT")
             && tx_split_allowed(max_tx)
         {
             tx_cands[1] = max_tx.sub();
@@ -797,7 +830,8 @@ impl Encoder {
             )
         };
         let mut modes = ym;
-        let mut rate = yr.rate + self.luma_mode_rate(bsize, ctx, &ym) as i64 + self.tx_size_rate(bsize, mi_row, mi_col, tx) as i64;
+        let mut rate =
+            yr.rate + self.luma_mode_rate(bsize, ctx, &ym) as i64 + self.tx_size_rate(bsize, mi_row, mi_col, tx) as i64;
         let mut dist = yr.dist;
         let mut nonzero = yr.nonzero;
         let mut coef_rate = yr.rate;
@@ -814,16 +848,20 @@ impl Encoder {
                     continue;
                 }
                 let m = Modes { uv_mode: mode, ..ym };
-                let su = self.model_satd(&env1, &bp, &m, uvtx, &mut s.pred) + self.model_satd(&env2, &bp, &m, uvtx, &mut s.pred);
+                let su = self.model_satd(&env1, &bp, &m, uvtx, &mut s.pred)
+                    + self.model_satd(&env2, &bp, &m, uvtx, &mut s.pred);
                 let rate = self.uv_mode_rate(bsize, &m) as f64 / 512.0;
                 ranked.push((su as f64 + lambda_sad * rate * 4.0, m));
             }
             sort_front(&mut ranked, 3);
             let mut cands: Vec<Modes> = ranked.iter().take(3).map(|r| r.1).collect();
-            if cfl_allowed(bsize, self.lossless, self.ssx, self.ssy) && bsize.w4() >= 2 && bsize.h4() >= 2 && !dbg("AV1_NO_CFL") {
-                if let Some(m) = self.search_cfl_alpha(s, &bp, &ym, uvtx) {
-                    cands.push(m);
-                }
+            if cfl_allowed(bsize, self.lossless, self.ssx, self.ssy)
+                && bsize.w4() >= 2
+                && bsize.h4() >= 2
+                && !dbg("AV1_NO_CFL")
+                && let Some(m) = self.search_cfl_alpha(s, &bp, &ym, uvtx)
+            {
+                cands.push(m);
             }
             let mut best_uv = (i64::MAX, ym);
             // The final pass repeats the ranking pass of the chosen candidate (trellis is off by
@@ -842,7 +880,16 @@ impl Encoder {
                     s.scratch.rank_only = true;
                     s.scratch.rec_plane = replay_ok.then_some(p);
                     let pr = self.try_code_plane(
-                        p, &bp, &m, uvtx, TxSearch::Search { trellis: false }, &quant[p], rdmult, &mut s.scratch, None, bound,
+                        p,
+                        &bp,
+                        &m,
+                        uvtx,
+                        TxSearch::Search { trellis: false },
+                        &quant[p],
+                        rdmult,
+                        &mut s.scratch,
+                        None,
+                        bound,
                     );
                     s.scratch.rank_only = false;
                     s.scratch.rec_plane = None;
@@ -941,7 +988,13 @@ impl Encoder {
         predict::cfl_ac(ac);
         for p in 1..3 {
             let av = self.block_edge_avail(p, bp, uvtx, DC_PRED, 0, false);
-            let ip = IntraParams { mode: DC_PRED, angle_delta: 0, filter_intra: None, edge_filter: true, smooth_neighbor: false };
+            let ip = IntraParams {
+                mode: DC_PRED,
+                angle_delta: 0,
+                filter_intra: None,
+                edge_filter: true,
+                smooth_neighbor: false,
+            };
             {
                 let rec = &self.rec[p];
                 predict::predict(&rec.data, rec.stride, x, y, uvtx, &ip, av, &mut s.pred, 64);
@@ -1035,17 +1088,27 @@ pub fn gathered_prob(cdf: &[u16], missing_rows: bool) -> u32 {
     use Partition::*;
     if missing_rows {
         // partition_gather_vert_alike
-        p(Vert as usize) + p(Split as usize) + p(HorzA as usize) + p(VertA as usize) + p(VertB as usize) + p(Vert4 as usize)
+        p(Vert as usize)
+            + p(Split as usize)
+            + p(HorzA as usize)
+            + p(VertA as usize)
+            + p(VertB as usize)
+            + p(Vert4 as usize)
     } else {
         // partition_gather_horz_alike
-        p(Horz as usize) + p(Split as usize) + p(HorzA as usize) + p(HorzB as usize) + p(VertA as usize) + p(Horz4 as usize)
+        p(Horz as usize)
+            + p(Split as usize)
+            + p(HorzA as usize)
+            + p(HorzB as usize)
+            + p(VertA as usize)
+            + p(Horz4 as usize)
     }
 }
 
 /// Sum of absolute 4x4 Hadamard transformed differences.
 pub fn satd(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: usize, h: usize) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    if w != 0 && h != 0 && w % 4 == 0 && h % 4 == 0 && crate::has_avx2() {
+    if w != 0 && h != 0 && w.is_multiple_of(4) && h.is_multiple_of(4) && crate::has_avx2() {
         // Validate the full footprint before entering the pointer-based kernel.
         for (data, stride) in [(src, sstride), (pred, pstride)] {
             let end = (h - 1).checked_mul(stride).and_then(|n| n.checked_add(w)).expect("SATD size overflow");
@@ -1120,8 +1183,10 @@ unsafe fn satd_avx2(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: 
                 let d0 = _mm256_sub_epi16(rows[0], rows[1]);
                 let d1 = _mm256_sub_epi16(rows[2], rows[3]);
                 let vertical = [
-                    _mm256_add_epi16(s0, s1), _mm256_sub_epi16(s0, s1),
-                    _mm256_add_epi16(d0, d1), _mm256_sub_epi16(d0, d1),
+                    _mm256_add_epi16(s0, s1),
+                    _mm256_sub_epi16(s0, s1),
+                    _mm256_add_epi16(d0, d1),
+                    _mm256_sub_epi16(d0, d1),
                 ];
                 let mut sums = _mm256_setzero_si256();
                 for v in vertical {
@@ -1136,7 +1201,13 @@ unsafe fn satd_avx2(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: 
                 let mut lanes = [0i32; 8];
                 _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sums);
                 total += lanes.iter().map(|&v| v as u64).sum::<u64>();
-                bx += if n >= 16 { 16 } else if n >= 8 { 8 } else { 4 };
+                bx += if n >= 16 {
+                    16
+                } else if n >= 8 {
+                    8
+                } else {
+                    4
+                };
             }
         }
         // Horizontal adds/subtracts duplicate each coefficient twice. Keep
@@ -1157,23 +1228,29 @@ mod search_tests {
             .map(|p| {
                 let (sx, sy) = if p == 0 { (0, 0) } else { (cfg.ssx, cfg.ssy) };
                 let (pw, ph) = ((w + sx) >> sx, (h + sy) >> sy);
-                (0..pw * ph).map(|i| {
-                    seed ^= seed << 13;
-                    seed ^= seed >> 17;
-                    seed ^= seed << 5;
-                    match pattern {
-                        0 => 128,
-                        1 => ((i % pw * 3 + i / pw * 5 + p * 31) % 256) as u8,
-                        _ => seed as u8,
-                    }
-                }).collect()
+                (0..pw * ph)
+                    .map(|i| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        match pattern {
+                            0 => 128,
+                            1 => ((i % pw * 3 + i / pw * 5 + p * 31) % 256) as u8,
+                            _ => seed as u8,
+                        }
+                    })
+                    .collect()
             })
             .collect();
-        let planes: Vec<_> = data.iter().enumerate().map(|(p, v)| {
-            let (sx, sy) = if p == 0 { (0, 0) } else { (cfg.ssx, cfg.ssy) };
-            let (pw, ph) = ((w + sx) >> sx, (h + sy) >> sy);
-            (v.as_slice(), pw, pw, ph)
-        }).collect();
+        let planes: Vec<_> = data
+            .iter()
+            .enumerate()
+            .map(|(p, v)| {
+                let (sx, sy) = if p == 0 { (0, 0) } else { (cfg.ssx, cfg.ssy) };
+                let (pw, ph) = ((w + sx) >> sx, (h + sy) >> sy);
+                (v.as_slice(), pw, pw, ph)
+            })
+            .collect();
         let mut e = Encoder::new(cfg, &planes);
         if q != 0 {
             e.compute_ssim_scaling();
@@ -1183,8 +1260,13 @@ mod search_tests {
 
     fn state(e: &Encoder) -> String {
         // Include padding and state outside the searched region as well.
-        format!("{:?}{:?}{:?}{:?}", e.rec.iter().map(|p| &p.data).collect::<Vec<_>>(),
-            e.ctx.above_ent, e.ctx.left_ent, e.mi)
+        format!(
+            "{:?}{:?}{:?}{:?}",
+            e.rec.iter().map(|p| &p.data).collect::<Vec<_>>(),
+            e.ctx.above_ent,
+            e.ctx.left_ent,
+            e.mi
+        )
     }
 
     fn decisions(d: &Decisions) -> String {
@@ -1231,16 +1313,26 @@ mod search_tests {
         for q in [0, 128, 255] {
             for pattern in 0..3 {
                 let bp = BlockPos {
-                    bsize: BlockSize::B32x32, mi_row: 0, mi_col: 0,
-                    partition: Partition::None, luma_tx: TxSize::T4x4,
+                    bsize: BlockSize::B32x32,
+                    mi_row: 0,
+                    mi_col: 0,
+                    partition: Partition::None,
+                    luma_tx: TxSize::T4x4,
                 };
                 let modes = Modes::default();
                 let mut reference = encoder(64, 64, q, Chroma::Mono, pattern);
                 let quant = reference.quant(q)[0];
                 let rdmult = reference.rd_mult(q);
                 let pr = reference.code_plane(
-                    0, &bp, &modes, bp.luma_tx, TxSearch::Search { trellis: true },
-                    &quant, rdmult, &mut Scratch::new(), None,
+                    0,
+                    &bp,
+                    &modes,
+                    bp.luma_tx,
+                    TxSearch::Search { trellis: true },
+                    &quant,
+                    rdmult,
+                    &mut Scratch::new(),
+                    None,
                 );
                 // Keep rates unrounded until the full candidate is compared.
                 let rate = 511;
@@ -1252,8 +1344,15 @@ mod search_tests {
                     let mut txbs = Vec::new();
                     let mut coefs = Vec::new();
                     let result = e.try_code_plane(
-                        0, &bp, &modes, bp.luma_tx, TxSearch::Search { trellis: true },
-                        &quant, rdmult, &mut Scratch::new(), Some((&mut txbs, &mut coefs)),
+                        0,
+                        &bp,
+                        &modes,
+                        bp.luma_tx,
+                        TxSearch::Search { trellis: true },
+                        &quant,
+                        rdmult,
+                        &mut Scratch::new(),
+                        Some((&mut txbs, &mut coefs)),
                         Some(PlaneBound { rd: budget, rate, dist }),
                     );
                     assert_eq!(result.is_some(), budget > rd, "q={q} pattern={pattern} budget={budget}");
@@ -1323,14 +1422,23 @@ mod satd_tests {
                             seed ^= seed << 5;
                             *v = match pattern {
                                 0 => 0,
-                                1 => if i % 2 == 0 { 255 } else { 0 },
+                                1 => {
+                                    if i % 2 == 0 {
+                                        255
+                                    } else {
+                                        0
+                                    }
+                                }
                                 2 => 255,
                                 _ => seed as u8,
                             };
                         }
                     }
-                    if pattern == 2 { pred.fill(0); }
+                    if pattern == 2 {
+                        pred.fill(0);
+                    }
                     let expected = satd_portable(&src, ss, &pred, ps, w, h);
+                    // SAFETY: the test returns early unless AVX2 was detected.
                     let actual = unsafe { satd_avx2(&src, ss, &pred, ps, w, h) };
                     assert_eq!(actual, expected, "{w}x{h}, pattern {pattern}");
                     assert_eq!(satd(&src, ss, &pred, ps, w, h), expected);

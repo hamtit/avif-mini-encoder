@@ -2,13 +2,7 @@ use super::*;
 use crate::tables::scan;
 
 // Scan-order reference with the same FP rounding, thresholds and QM rules.
-fn reference(
-    coeff: &[i32],
-    q: &PlaneQuant,
-    tx: TxSize,
-    tt: TxType,
-    sc: &[u16],
-) -> (Vec<i32>, Vec<i32>, usize) {
+fn reference(coeff: &[i32], q: &PlaneQuant, tx: TxSize, tt: TxType, sc: &[u16]) -> (Vec<i32>, Vec<i32>, usize) {
     let mut qc = vec![0; sc.len()];
     let mut dq = vec![0; sc.len()];
     let mut eob = 0;
@@ -83,16 +77,12 @@ fn raster_quantization_matches_scan_order() {
                                         _ => (seed % 65) as i32 - 32,
                                     };
                                 }
-                                let (expected_q, expected_dq, expected_eob) =
-                                    reference(&coeff, &quant, tx, tt, sc);
+                                let (expected_q, expected_dq, expected_eob) = reference(&coeff, &quant, tx, tt, sc);
                                 // Sentinel tails must remain untouched.
                                 let mut qc = vec![123; n + 7];
                                 let mut dq = vec![123; n + 7];
                                 let eob = quantize_fp(&coeff, &quant, tx, tt, sc, &mut qc, &mut dq);
-                                assert_eq!(
-                                    eob, expected_eob,
-                                    "{tx:?} class={class} q={qindex} qm={level}"
-                                );
+                                assert_eq!(eob, expected_eob, "{tx:?} class={class} q={qindex} qm={level}");
                                 assert_eq!(&qc[..n], expected_q);
                                 assert_eq!(&dq[..n], expected_dq);
                                 assert_eq!(&qc[n..], &[123; 7]);
