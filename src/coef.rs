@@ -1146,8 +1146,8 @@ mod simd_tests {
                 let mut info = TxbInfo::new(tx, 0);
                 info.tx_class = class;
                 let s = info.stride();
-                let n = s * (info.width + 4) + 16;
-                let max_pos = n - 1;
+                // Largest padded position a non-zero coefficient can have, as in `cost_coeffs`.
+                let max_pos = info.padded(info.width * info.height - 1);
                 let mut levels = vec![0u8; LEVELS_BUF];
                 for v in &mut levels[..LEVELS_REGION] {
                     *v = match rnd() % 5 {
