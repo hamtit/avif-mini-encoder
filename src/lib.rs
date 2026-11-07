@@ -138,6 +138,9 @@ pub(crate) fn frame_config(qindex: u8, chroma: Chroma, tune: Tune, speed: u8) ->
     }
 }
 
+/// Version of this crate (`CARGO_PKG_VERSION`).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Encoding error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(pub String);
@@ -185,6 +188,18 @@ pub fn encode_av1_threads(
 ) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
     if width == 0 || height == 0 || width > 65536 || height > 65536 {
         return Err(Error(format!("unsupported size {width}x{height}")));
+    }
+    // Validate the planes up front so a short buffer is an error, not a panic.
+    let (ssx, ssy) = if chroma == Chroma::Yuv444 { (0, 0) } else { (1, 1) };
+    let (cw, ch) = ((width + ssx) >> ssx, (height + ssy) >> ssy);
+    let expected: &[usize] = if chroma == Chroma::Mono { &[width * height] } else { &[width * height, cw * ch, cw * ch] };
+    if planes.len() != expected.len() {
+        return Err(Error(format!("expected {} plane(s), got {}", expected.len(), planes.len())));
+    }
+    for (i, (plane, &len)) in planes.iter().zip(expected).enumerate() {
+        if plane.len() != len {
+            return Err(Error(format!("plane {i} has {} bytes, expected {len}", plane.len())));
+        }
     }
     // Only one tile is written: the frame must fit AV1's single-tile limits
     // (4096 wide, 4096 * 2304 samples).
@@ -340,6 +355,25 @@ mod tests {
             assert_eq!(pc.unwrap(), seq_c);
             assert_eq!(pa.unwrap(), seq_a);
         }
+    }
+
+    #[test]
+    fn rejects_malformed_planes() {
+        let y = flat(16, 16);
+        let c = flat(8, 8);
+        let run = |planes: &[&[u8]], chroma| encode_av1(planes, 16, 16, chroma, None, true, 100, Tune::Iq, 5);
+        assert!(run(&[&y, &c, &c], Chroma::Yuv420).is_ok());
+        assert!(run(&[&y[..255], &c, &c], Chroma::Yuv420).is_err());
+        assert!(run(&[&y, &c[..63], &c], Chroma::Yuv420).is_err());
+        assert!(run(&[&y, &c, &c], Chroma::Yuv444).is_err());
+        assert!(run(&[&y], Chroma::Yuv420).is_err());
+        assert!(run(&[&y, &y], Chroma::Mono).is_err());
+        assert!(run(&[&y], Chroma::Mono).is_ok());
+    }
+
+    #[test]
+    fn exposes_version() {
+        assert!(!VERSION.is_empty());
     }
 
     #[test]
