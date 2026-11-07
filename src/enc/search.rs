@@ -1117,6 +1117,16 @@ pub fn satd(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: usize, h
         // SAFETY: AVX2 is detected above; each load stays within the footprint.
         return unsafe { satd_avx2(src, sstride, pred, pstride, w, h) };
     }
+    #[cfg(target_arch = "aarch64")]
+    if w != 0 && h != 0 && w.is_multiple_of(4) && h.is_multiple_of(4) && crate::has_neon() {
+        // Validate the full footprint before entering the pointer-based kernel.
+        for (data, stride) in [(src, sstride), (pred, pstride)] {
+            let end = (h - 1).checked_mul(stride).and_then(|n| n.checked_add(w)).expect("SATD size overflow");
+            assert!(data.len() >= end, "SATD plane is too short");
+        }
+        // SAFETY: NEON is part of the aarch64 baseline; each load stays within the footprint.
+        return unsafe { satd_neon(src, sstride, pred, pstride, w, h) };
+    }
     satd_portable(src, sstride, pred, pstride, w, h)
 }
 
@@ -1213,6 +1223,58 @@ unsafe fn satd_avx2(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: 
         // Horizontal adds/subtracts duplicate each coefficient twice. Keep
         // the original single rounding step after summing all 4x4 blocks.
         total / 4
+    }
+}
+
+/// Two 4x4 transforms per iteration (one 4-column block when only four columns
+/// remain, the upper lanes then stay zero). Vertical transform first; the
+/// horizontal one only needs `|x + y| + |x - y| = 2 * max(|x|, |y|)` on the
+/// pair sums and differences, so each 4-point row contributes
+/// `max(|s0|, |s1|) + max(|d0|, |d1|)`, which is half its absolute sum.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn satd_neon(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: usize, h: usize) -> u64 {
+    use std::arch::aarch64::*;
+    // SAFETY: the caller checks both input footprints. Loads use exactly 4 or
+    // 8 bytes, including at the right/bottom image edges.
+    unsafe {
+        let mut acc = vdupq_n_u32(0);
+        for by in (0..h).step_by(4) {
+            let mut bx = 0;
+            while bx < w {
+                let wide = w - bx >= 8;
+                let mut rows = [vdupq_n_s16(0); 4];
+                for r in 0..4 {
+                    let s = src.as_ptr().add((by + r) * sstride + bx);
+                    let p = pred.as_ptr().add((by + r) * pstride + bx);
+                    let load = |ptr: *const u8| {
+                        if wide {
+                            vld1_u8(ptr)
+                        } else {
+                            vcreate_u8(u64::from(std::ptr::read_unaligned(ptr.cast::<u32>())))
+                        }
+                    };
+                    rows[r] = vreinterpretq_s16_u16(vsubl_u8(load(s), load(p)));
+                }
+                let s0 = vaddq_s16(rows[0], rows[1]);
+                let s1 = vaddq_s16(rows[2], rows[3]);
+                let d0 = vsubq_s16(rows[0], rows[1]);
+                let d1 = vsubq_s16(rows[2], rows[3]);
+                let vertical = [vaddq_s16(s0, s1), vsubq_s16(s0, s1), vaddq_s16(d0, d1), vsubq_s16(d0, d1)];
+                for v in vertical {
+                    // Pair sums and differences of each 4-point row: lanes 0, 1 are block 0 and
+                    // lanes 2, 3 block 1 (the upper half repeats them).
+                    let (e, o) = (vuzp1q_s16(v, v), vuzp2q_s16(v, v));
+                    let s = vabs_s16(vget_low_s16(vaddq_s16(e, o)));
+                    let d = vabs_s16(vget_low_s16(vsubq_s16(e, o)));
+                    let m = vadd_s16(vpmax_s16(s, s), vpmax_s16(d, d));
+                    acc = vaddw_u16(acc, vreinterpret_u16_s16(m));
+                }
+                bx += if wide { 8 } else { 4 };
+            }
+        }
+        // Every pair maximum was added twice (lanes 2 and 3 duplicate lanes 0 and 1).
+        u64::from(vaddvq_u32(acc)) / 2
     }
 }
 
@@ -1398,12 +1460,13 @@ mod search_tests {
     }
 }
 
-#[cfg(all(test, target_arch = "x86_64"))]
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
 mod satd_tests {
     use super::*;
 
     #[test]
-    fn avx2_satd_matches_portable() {
+    fn simd_satd_matches_portable() {
+        #[cfg(target_arch = "x86_64")]
         if !std::arch::is_x86_feature_detected!("avx2") {
             return;
         }
@@ -1438,8 +1501,12 @@ mod satd_tests {
                         pred.fill(0);
                     }
                     let expected = satd_portable(&src, ss, &pred, ps, w, h);
-                    // SAFETY: the test returns early unless AVX2 was detected.
+                    // SAFETY: the test returns early unless AVX2 was detected; NEON is baseline.
+                    #[cfg(target_arch = "x86_64")]
                     let actual = unsafe { satd_avx2(&src, ss, &pred, ps, w, h) };
+                    // SAFETY: NEON is part of the aarch64 baseline.
+                    #[cfg(target_arch = "aarch64")]
+                    let actual = unsafe { satd_neon(&src, ss, &pred, ps, w, h) };
                     assert_eq!(actual, expected, "{w}x{h}, pattern {pattern}");
                     assert_eq!(satd(&src, ss, &pred, ps, w, h), expected);
                 }

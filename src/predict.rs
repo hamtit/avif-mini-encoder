@@ -375,6 +375,11 @@ fn interpolate<const STEP: usize>(out: &mut [u8], edge: &[u8], shift: i32) {
         // SAFETY: AVX2 was detected; the helper only accesses complete chunks.
         i = unsafe { interpolate_avx2::<STEP>(out, edge, shift) };
     }
+    #[cfg(target_arch = "aarch64")]
+    if crate::has_neon() {
+        // SAFETY: NEON is part of the aarch64 baseline; the helper only accesses complete chunks.
+        i = unsafe { interpolate_neon::<STEP>(out, edge, shift) };
+    }
     for j in i..out.len() {
         let a = edge[j * STEP] as i32;
         let b = edge[j * STEP + 1] as i32;
@@ -412,6 +417,39 @@ unsafe fn interpolate_avx2<const STEP: usize>(out: &mut [u8], edge: &[u8], shift
         // SAFETY: AVX2 is enabled for this function; the 8-byte store covers `out[i..i + 8]`
         // and `i + 8 <= out.len()`.
         unsafe { _mm_storel_epi64(out.as_mut_ptr().add(i).cast(), pixels) };
+        i += 8;
+    }
+    i
+}
+
+/// NEON twin of `interpolate_avx2`: eight outputs per iteration.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn interpolate_neon<const STEP: usize>(out: &mut [u8], edge: &[u8], shift: i32) -> usize {
+    use std::arch::aarch64::*;
+    let mut i = 0;
+    let wa = vdupq_n_u16((32 - shift) as u16);
+    let wb = vdupq_n_u16(shift as u16);
+    let rnd = vdupq_n_u16(16);
+    while i + 8 <= out.len() {
+        let pos = i * STEP;
+        let (a, b) = if STEP == 1 {
+            // SAFETY: the caller cut `edge` to `(out.len() - 1) * STEP + 2` bytes and
+            // `i + 8 <= out.len()`, so the 8-byte loads at `pos = i` and `pos + 1` end at
+            // index `i + 8 < edge.len()`.
+            let (a, b) = unsafe { (vld1_u8(edge.as_ptr().add(pos)), vld1_u8(edge.as_ptr().add(pos + 1))) };
+            (vmovl_u8(a), vmovl_u8(b))
+        } else {
+            // SAFETY: with `pos = 2 * i` and `i + 8 <= out.len()`, the 16-byte de-interleaving
+            // load ends at index `2 * i + 15 <= 2 * out.len() - 1 = edge.len() - 1`.
+            let pairs = unsafe { vld2_u8(edge.as_ptr().add(pos)) };
+            (vmovl_u8(pairs.0), vmovl_u8(pairs.1))
+        };
+        // At most 255 * 32 + 16, so the 16-bit lanes never overflow.
+        let sum = vaddq_u16(vmlaq_u16(vmulq_u16(a, wa), b, wb), rnd);
+        let pixels = vmovn_u16(vshrq_n_u16::<5>(sum));
+        // SAFETY: the 8-byte store covers `out[i..i + 8]` and `i + 8 <= out.len()`.
+        unsafe { vst1_u8(out.as_mut_ptr().add(i), pixels) };
         i += 8;
     }
     i

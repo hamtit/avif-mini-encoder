@@ -468,6 +468,18 @@ pub fn cost_coeffs(
                 }
             };
     }
+    #[cfg(target_arch = "aarch64")]
+    if crate::has_neon() {
+        // SAFETY: NEON is part of the aarch64 baseline; the sizes were asserted above.
+        return cost
+            + unsafe {
+                match info.tx_class {
+                    TX_CLASS_2D => cost_rest_neon::<TX_CLASS_2D>(&c, q, eob, scan, info, dc_ctx, levels, max_pos),
+                    TX_CLASS_HORIZ => cost_rest_neon::<TX_CLASS_HORIZ>(&c, q, eob, scan, info, dc_ctx, levels, max_pos),
+                    _ => cost_rest_neon::<TX_CLASS_VERT>(&c, q, eob, scan, info, dc_ctx, levels, max_pos),
+                }
+            };
+    }
     match info.tx_class {
         TX_CLASS_2D => cost + cost_rest::<TX_CLASS_2D, false>(&c, q, eob, scan, info, dc_ctx, levels),
         TX_CLASS_HORIZ => cost + cost_rest::<TX_CLASS_HORIZ, false>(&c, q, eob, scan, info, dc_ctx, levels),
@@ -477,7 +489,7 @@ pub fn cost_coeffs(
 
 /// Padded coefficient-base context offsets per (transform size, class), indexed
 /// like the levels buffer.
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn ctx_offsets(tx: TxSize, class: u8) -> &'static [u8] {
     use std::sync::OnceLock;
     static T: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
@@ -562,6 +574,62 @@ unsafe fn cost_rest_avx2<const CLASS: u8>(
 ) -> i32 {
     // SAFETY: forwarded from the caller (AVX2 present, sizes asserted).
     unsafe { ctx_map_avx2::<CLASS>(levels, info, max_pos) };
+    cost_rest::<CLASS, true>(c, q, eob, scan, info, dc_ctx, levels)
+}
+
+/// NEON twin of `ctx_map_avx2` (sixteen positions per step).
+///
+/// # Safety
+/// `levels` holds the padded levels in its first region (sized for `info`,
+/// `max_pos` within it) and has room for the map in the second.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn ctx_map_neon<const CLASS: u8>(levels: &mut [u8], info: &TxbInfo, max_pos: usize) {
+    use core::arch::aarch64::*;
+    let s = info.stride();
+    let offs = ctx_offsets(info.tx, CLASS);
+    let (lv, map) = levels.split_at_mut(LEVELS_REGION);
+    let lp = lv.as_ptr();
+    let mp = map.as_mut_ptr();
+    let op = offs.as_ptr();
+    let three = vdupq_n_u8(3);
+    let four = vdupq_n_u8(4);
+    let one = vdupq_n_u8(1);
+    let mut p = 0usize;
+    // Reads reach at most max_pos + 15 + 4 * stride < LEVELS_REGION.
+    // SAFETY: every load/store stays inside the padded regions per the bounds argument above.
+    unsafe {
+        while p <= max_pos {
+            let m = |o: usize| vminq_u8(vld1q_u8(lp.add(p + o)), three);
+            let mut mag = vaddq_u8(m(s), m(1));
+            mag = match CLASS {
+                TX_CLASS_2D => vaddq_u8(mag, vaddq_u8(vaddq_u8(m(s + 1), m(2 * s)), m(2))),
+                TX_CLASS_VERT => vaddq_u8(mag, vaddq_u8(vaddq_u8(m(2), m(3)), m(4))),
+                _ => vaddq_u8(mag, vaddq_u8(vaddq_u8(m(2 * s), m(3 * s)), m(4 * s))),
+            };
+            let half = vshrq_n_u8::<1>(vaddq_u8(mag, one));
+            let ctx = vaddq_u8(vminq_u8(half, four), vld1q_u8(op.add(p)));
+            vst1q_u8(mp.add(p), ctx);
+            p += 16;
+        }
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn cost_rest_neon<const CLASS: u8>(
+    c: &TxbCosts,
+    q: &[i32],
+    eob: usize,
+    scan: &[u16],
+    info: &TxbInfo,
+    dc_ctx: usize,
+    levels: &mut [u8],
+    max_pos: usize,
+) -> i32 {
+    // SAFETY: forwarded from the caller (sizes asserted).
+    unsafe { ctx_map_neon::<CLASS>(levels, info, max_pos) };
     cost_rest::<CLASS, true>(c, q, eob, scan, info, dc_ctx, levels)
 }
 
@@ -1046,6 +1114,77 @@ pub fn dequantize(
         let rc = rc as usize;
         if q[rc] != 0 {
             dq[rc] = dequant_coeff(q[rc], quant.dqv(rc, iqm), shift);
+        }
+    }
+}
+
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
+mod simd_tests {
+    use super::*;
+
+    /// The vector context map must equal the scalar neighbourhood formula for
+    /// every position up to `max_pos`, in every transform size and class.
+    #[test]
+    fn context_map_matches_scalar() {
+        #[cfg(target_arch = "x86_64")]
+        if !crate::has_avx2() {
+            return;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if !crate::has_neon() {
+            return;
+        }
+        let mut seed = 0x2468_ace1u32;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        for &tx in &TxSize::ALL {
+            for class in [TX_CLASS_2D, TX_CLASS_HORIZ, TX_CLASS_VERT] {
+                let mut info = TxbInfo::new(tx, 0);
+                info.tx_class = class;
+                let s = info.stride();
+                // Largest padded position a non-zero coefficient can have, as in `cost_coeffs`.
+                let max_pos = info.padded(info.width * info.height - 1);
+                let mut levels = vec![0u8; LEVELS_BUF];
+                for v in &mut levels[..LEVELS_REGION] {
+                    *v = match rnd() % 5 {
+                        0 => 0,
+                        1 => (rnd() % 4) as u8,
+                        2 => 127,
+                        _ => (rnd() % 8) as u8,
+                    };
+                }
+                let offs = ctx_offsets(tx, class).to_vec();
+                // SAFETY: support was checked above; `levels` has the sizes the kernel expects and
+                // `max_pos` is below the bound asserted by `cost_coeffs`.
+                unsafe {
+                    #[cfg(target_arch = "x86_64")]
+                    match class {
+                        TX_CLASS_2D => ctx_map_avx2::<TX_CLASS_2D>(&mut levels, &info, max_pos),
+                        TX_CLASS_HORIZ => ctx_map_avx2::<TX_CLASS_HORIZ>(&mut levels, &info, max_pos),
+                        _ => ctx_map_avx2::<TX_CLASS_VERT>(&mut levels, &info, max_pos),
+                    }
+                    #[cfg(target_arch = "aarch64")]
+                    match class {
+                        TX_CLASS_2D => ctx_map_neon::<TX_CLASS_2D>(&mut levels, &info, max_pos),
+                        TX_CLASS_HORIZ => ctx_map_neon::<TX_CLASS_HORIZ>(&mut levels, &info, max_pos),
+                        _ => ctx_map_neon::<TX_CLASS_VERT>(&mut levels, &info, max_pos),
+                    }
+                }
+                for pos in 0..=max_pos {
+                    let l = |o: usize| (levels[pos + o] as usize).min(3);
+                    let mag = match class {
+                        TX_CLASS_2D => l(s) + l(1) + l(s + 1) + l(2 * s) + l(2),
+                        TX_CLASS_VERT => l(s) + l(1) + l(2) + l(3) + l(4),
+                        _ => l(s) + l(1) + l(2 * s) + l(3 * s) + l(4 * s),
+                    };
+                    let expected = ((mag + 1) >> 1).min(4) + offs[pos] as usize;
+                    assert_eq!(levels[LEVELS_REGION + pos] as usize, expected, "{tx:?} class {class} pos {pos}");
+                }
+            }
         }
     }
 }
