@@ -478,6 +478,9 @@ const PRICONV: [i32; 5] = [0, 2, 4, 8, 14];
 const SECCONV: [i32; 2] = [0, 2];
 const TOTAL: usize = 10;
 
+/// One filter block's search result: (row, column, error totals per plane type, chosen strengths).
+type FbSearch = (usize, usize, [[u64; TOTAL]; 2], Vec<(usize, i32)>);
+
 fn sec_value(code: i32) -> i32 {
     code + (code == 3) as i32
 }
@@ -505,58 +508,55 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
     // are searched in parallel; results are gathered in raster order.
     let thr = e.cfg.threads;
     let ee: &Encoder = e;
-    let rows: Vec<Vec<(usize, usize, [[u64; TOTAL]; 2], Vec<(usize, i32)>)>> =
-        crate::parallel::par_map(nvfb, thr, |fbr| {
-            let mut list = Vec::new();
-            let mut pad = Pad::new();
-            let mut res = Vec::new();
-            for fbc in 0..nhfb {
-                block_list(ee, fbr, fbc, &mut list);
-                if list.is_empty() {
-                    continue;
-                }
-                let dirs: Vec<(usize, i32)> =
-                    list.iter().map(|&(by, bx)| find_dir(&pre[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
-                let mut m = [[0u64; TOTAL]; 2];
-                for p in 0..np {
-                    let (sx, sy) = if p == 0 { (0, 0) } else { (ee.ssx, ee.ssy) };
-                    let bw = 8 >> sx;
-                    let bh = 8 >> sy;
-                    pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
-                    let damp = damping - (p > 0) as i32;
-                    let s = &ee.src[p];
-                    let ox = (fbc * 64) >> sx;
-                    let oy = (fbr * 64) >> sy;
-                    let mut err = [0u64; TOTAL];
-                    for (k, &(by, bx)) in list.iter().enumerate() {
-                        let (dir, var) = dirs[k];
-                        let ts: [i32; 5] =
-                            core::array::from_fn(
-                                |i| if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] },
-                            );
-                        let (x0, y0) = (ox + bx * bw, oy + by * bh);
-                        search_block(
-                            &pad,
-                            &s.data[y0 * s.stride + x0..],
-                            s.stride,
-                            x0,
-                            y0,
-                            bw,
-                            bh,
-                            &ts,
-                            dir,
-                            damp,
-                            &mut err,
-                        );
-                    }
-                    for gi in 0..TOTAL {
-                        m[(p > 0) as usize][gi] += err[gi];
-                    }
-                }
-                res.push((fbr, fbc, m, dirs));
+    let rows: Vec<Vec<FbSearch>> = crate::parallel::par_map(nvfb, thr, |fbr| {
+        let mut list = Vec::new();
+        let mut pad = Pad::new();
+        let mut res = Vec::new();
+        for fbc in 0..nhfb {
+            block_list(ee, fbr, fbc, &mut list);
+            if list.is_empty() {
+                continue;
             }
-            res
-        });
+            let dirs: Vec<(usize, i32)> =
+                list.iter().map(|&(by, bx)| find_dir(&pre[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
+            let mut m = [[0u64; TOTAL]; 2];
+            for p in 0..np {
+                let (sx, sy) = if p == 0 { (0, 0) } else { (ee.ssx, ee.ssy) };
+                let bw = 8 >> sx;
+                let bh = 8 >> sy;
+                pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
+                let damp = damping - (p > 0) as i32;
+                let s = &ee.src[p];
+                let ox = (fbc * 64) >> sx;
+                let oy = (fbr * 64) >> sy;
+                let mut err = [0u64; TOTAL];
+                for (k, &(by, bx)) in list.iter().enumerate() {
+                    let (dir, var) = dirs[k];
+                    let ts: [i32; 5] =
+                        core::array::from_fn(|i| if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] });
+                    let (x0, y0) = (ox + bx * bw, oy + by * bh);
+                    search_block(
+                        &pad,
+                        &s.data[y0 * s.stride + x0..],
+                        s.stride,
+                        x0,
+                        y0,
+                        bw,
+                        bh,
+                        &ts,
+                        dir,
+                        damp,
+                        &mut err,
+                    );
+                }
+                for gi in 0..TOTAL {
+                    m[(p > 0) as usize][gi] += err[gi];
+                }
+            }
+            res.push((fbr, fbc, m, dirs));
+        }
+        res
+    });
     let mut list = Vec::new();
     let mut out = vec![0u8; 64 * 64];
     let mut pad = Pad::new();

@@ -859,10 +859,9 @@ impl Encoder {
                 && bsize.w4() >= 2
                 && bsize.h4() >= 2
                 && !dbg("AV1_NO_CFL")
+                && let Some(m) = self.search_cfl_alpha(s, &bp, &ym, uvtx)
             {
-                if let Some(m) = self.search_cfl_alpha(s, &bp, &ym, uvtx) {
-                    cands.push(m);
-                }
+                cands.push(m);
             }
             let mut best_uv = (i64::MAX, ym);
             // The final pass repeats the ranking pass of the chosen candidate (trellis is off by
@@ -1109,7 +1108,7 @@ pub fn gathered_prob(cdf: &[u16], missing_rows: bool) -> u32 {
 /// Sum of absolute 4x4 Hadamard transformed differences.
 pub fn satd(src: &[u8], sstride: usize, pred: &[u8], pstride: usize, w: usize, h: usize) -> u64 {
     #[cfg(target_arch = "x86_64")]
-    if w != 0 && h != 0 && w % 4 == 0 && h % 4 == 0 && crate::has_avx2() {
+    if w != 0 && h != 0 && w.is_multiple_of(4) && h.is_multiple_of(4) && crate::has_avx2() {
         // Validate the full footprint before entering the pointer-based kernel.
         for (data, stride) in [(src, sstride), (pred, pstride)] {
             let end = (h - 1).checked_mul(stride).and_then(|n| n.checked_add(w)).expect("SATD size overflow");
@@ -1439,6 +1438,7 @@ mod satd_tests {
                         pred.fill(0);
                     }
                     let expected = satd_portable(&src, ss, &pred, ps, w, h);
+                    // SAFETY: the test returns early unless AVX2 was detected.
                     let actual = unsafe { satd_avx2(&src, ss, &pred, ps, w, h) };
                     assert_eq!(actual, expected, "{w}x{h}, pattern {pattern}");
                     assert_eq!(satd(&src, ss, &pred, ps, w, h), expected);

@@ -188,6 +188,12 @@ impl Scratch {
     }
 }
 
+impl Default for Scratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn residual(src: &[u8], ss: usize, pred: &[u8], w: usize, h: usize, out: &mut [i16]) {
     #[cfg(target_arch = "x86_64")]
     if crate::has_avx2() {

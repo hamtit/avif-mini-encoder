@@ -292,7 +292,7 @@ pub const NUM_EXT_TX_SET: [usize; 6] = [1, 2, 5, 7, 12, 16];
 /// Intra transform set type for a transform size.
 pub fn intra_tx_set(tx: TxSize, reduced: bool) -> usize {
     let sqr_up = tx.sqr_up();
-    if sqr_up > TxSize::T32x32 || sqr_up == TxSize::T32x32 {
+    if sqr_up >= TxSize::T32x32 {
         return EXT_TX_SET_DCTONLY;
     }
     if reduced {

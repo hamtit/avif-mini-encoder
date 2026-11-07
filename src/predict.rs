@@ -87,6 +87,7 @@ pub struct IntraParams {
 
 /// Predict a `tx` sized block at `(x, y)` of `plane` (`frame` / `stride`)
 /// into `dst`.
+#[allow(clippy::too_many_arguments)]
 pub fn predict(
     frame: &[u8],
     stride: usize,
@@ -392,16 +393,24 @@ unsafe fn interpolate_avx2<const STEP: usize>(out: &mut [u8], edge: &[u8], shift
     while i + 8 <= out.len() {
         let pos = i * STEP;
         let (a, b) = if STEP == 1 {
+            // SAFETY: AVX2 is enabled for this function. The caller cut `edge` to
+            // `(out.len() - 1) * STEP + 2` bytes and `i + 8 <= out.len()`, so the 8-byte loads at
+            // `pos = i` and `pos + 1` end at index `i + 8 < edge.len()`.
             let a = unsafe { _mm_loadl_epi64(edge.as_ptr().add(pos).cast()) };
+            // SAFETY: as above.
             let b = unsafe { _mm_loadl_epi64(edge.as_ptr().add(pos + 1).cast()) };
             (_mm_cvtepu8_epi16(a), _mm_cvtepu8_epi16(b))
         } else {
+            // SAFETY: AVX2 is enabled for this function. With `pos = 2 * i` and `i + 8 <= out.len()`,
+            // the 16-byte load ends at index `2 * i + 15 <= 2 * out.len() - 1 = edge.len() - 1`.
             let pairs = unsafe { _mm_loadu_si128(edge.as_ptr().add(pos).cast()) };
             (_mm_and_si128(pairs, _mm_set1_epi16(255)), _mm_srli_epi16::<8>(pairs))
         };
         let sum = _mm_add_epi16(_mm_mullo_epi16(a, wa), _mm_mullo_epi16(b, wb));
         let rounded = _mm_srli_epi16::<5>(_mm_add_epi16(sum, _mm_set1_epi16(16)));
         let pixels = _mm_packus_epi16(rounded, rounded);
+        // SAFETY: AVX2 is enabled for this function; the 8-byte store covers `out[i..i + 8]`
+        // and `i + 8 <= out.len()`.
         unsafe { _mm_storel_epi64(out.as_mut_ptr().add(i).cast(), pixels) };
         i += 8;
     }

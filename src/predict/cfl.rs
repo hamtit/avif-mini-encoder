@@ -31,7 +31,7 @@ pub(crate) fn sse(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: us
 /// SSE of every alpha in -16..=16 (index `alpha + 16`); same values as `sse` per alpha.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sse_all(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: usize, ac: &[i16]) -> [u64; 33] {
-    assert!(w > 0 && h > 0 && w <= 32 && h <= 32 && w % 2 == 0);
+    assert!(w > 0 && h > 0 && w <= 32 && h <= 32 && w.is_multiple_of(2));
     assert!(src.len() >= (h - 1) * ss + w && pred.len() >= (h - 1) * ps + w && ac.len() >= w * h);
     #[cfg(target_arch = "x86_64")]
     if crate::has_avx2() {
@@ -50,6 +50,9 @@ pub(crate) fn sse_all(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h
 #[allow(clippy::too_many_arguments)]
 unsafe fn sse_all_avx2(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: usize, ac: &[i16]) -> [u64; 33] {
     use std::arch::x86_64::*;
+    // SAFETY: AVX2 is enabled for this function. `sse_all` asserted that `w` is even (so the
+    // pixel pair `c`, `c + 1` stays inside the row) and that `src`, `pred` and `ac` cover `h`
+    // rows of `w` pixels, which bounds every unchecked read; the stores go to local arrays.
     unsafe {
         let a0 = _mm256_setr_epi16(-16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -3, -2, -1);
         let a1 = _mm256_setr_epi16(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
@@ -129,6 +132,8 @@ unsafe fn sse_avx2(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: u
     for r in 0..h {
         let mut c = 0;
         while c + 8 <= w {
+            // SAFETY: AVX2 is enabled for this function. `c + 8 <= w`, so the 8 lanes of `ac` and
+            // the 8 bytes of `pred` and `src` read here lie inside the rows the caller asserted.
             unsafe {
                 let l = _mm256_cvtepi16_epi32(_mm_loadu_si128(ac.as_ptr().add(r * w + c).cast()));
                 let v = _mm256_mullo_epi32(l, _mm256_set1_epi32(alpha));
@@ -151,6 +156,7 @@ unsafe fn sse_avx2(src: &[u8], ss: usize, pred: &[u8], ps: usize, w: usize, h: u
         }
     }
     let mut lanes = [0i32; 8];
+    // SAFETY: AVX2 is enabled for this function; `lanes` holds 8 i32, the width of the store.
     unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), sums) };
     tail + lanes.iter().map(|&v| v as u64).sum::<u64>()
 }

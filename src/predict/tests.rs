@@ -9,7 +9,7 @@ fn dispatched_predictions_match_scalar() {
                     0 => 0,
                     1 => 255,
                     2 => {
-                        if i % 2 == 0 {
+                        if i.is_multiple_of(2) {
                             0
                         } else {
                             255

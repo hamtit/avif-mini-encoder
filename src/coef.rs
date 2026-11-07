@@ -596,8 +596,12 @@ fn cost_rest<const CLASS: u8, const MAP: bool>(
         let ctx = if CLASS == TX_CLASS_2D && ci == 0 {
             0
         } else if MAP {
+            // SAFETY: `pos` < LEVELS_REGION (see above) and the context map follows the levels
+            // region in `levels` (LEVELS_BUF), so `LEVELS_REGION + pos` is in bounds.
             unsafe { *levels.get_unchecked(LEVELS_REGION + pos) as usize }
         } else {
+            // SAFETY: `pos` plus the largest neighbour offset used here (4 * s) is in bounds
+            // of `levels` (see above).
             let l = |i: usize| unsafe { (*levels.get_unchecked(pos + i) as usize).min(3) };
             let mut mag = l(s) + l(1);
             match CLASS {
@@ -607,11 +611,14 @@ fn cost_rest<const CLASS: u8, const MAP: bool>(
             }
             let ctx = ((mag + 1) >> 1).min(4);
             match CLASS {
+                // SAFETY: `ci` < width * height <= offs.len() (see above).
                 TX_CLASS_2D => ctx + unsafe { *offs.get_unchecked(ci) } as usize,
                 TX_CLASS_HORIZ => ctx + NZ_MAP_CTX_OFFSET_1D[ci >> bhl],
                 _ => ctx + NZ_MAP_CTX_OFFSET_1D[ci & hmask],
             }
         };
+        // SAFETY: `ctx` is at most 4 + 36 (min(mag, 4) plus the largest context offset), which is
+        // below the 42 base contexts in `base`.
         let mut cc = unsafe { base.get_unchecked(ctx)[abs.min(3) as usize] };
         if si == 0 {
             if abs != 0 {

@@ -8,11 +8,15 @@ use crate::tables::cdf_default as d;
 const TOKEN_CDF_Q_CTXS: usize = 4;
 
 macro_rules! reshape {
-    ($src:expr) => {
+    ($src:expr) => {{
+        // The target type comes from the field being initialised, and `transmute` fails to
+        // compile unless both sizes match, so spelling the types out would add nothing.
+        #[allow(clippy::missing_transmute_annotations)]
         // SAFETY: nested arrays of u16 have the same layout as the flat array
         // of the same total length (checked by the compiler through the sizes).
-        unsafe { core::mem::transmute($src) }
-    };
+        let reshaped = unsafe { core::mem::transmute($src) };
+        reshaped
+    }};
 }
 
 #[derive(Clone)]

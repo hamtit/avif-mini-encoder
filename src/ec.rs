@@ -55,12 +55,12 @@ impl SymbolWriter {
         let mut r = self.rng;
         let n = nsyms - 1;
         if fl < 32768 {
-            let u = ((r >> 8) * (fl >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - (s - 1));
-            let v = ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - s);
+            let u = (((r >> 8) * (fl >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - (s - 1));
+            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - s);
             l += r - u;
             r = u - v;
         } else {
-            r -= ((r >> 8) * (fh >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - s);
+            r -= (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + EC_MIN_PROB * (n - s);
         }
         self.normalize(l, r);
     }
@@ -85,7 +85,7 @@ impl SymbolWriter {
         let f = 16384u32;
         let l = self.low;
         let r = self.rng;
-        let mut v = (r >> 8) * (f >> EC_PROB_SHIFT) >> (7 - EC_PROB_SHIFT);
+        let mut v = ((r >> 8) * (f >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT);
         v += EC_MIN_PROB;
         let (l, r) = if bit { (l + r - v, v) } else { (l, r - v) };
         self.normalize(l, r);
@@ -207,7 +207,7 @@ impl BitWriter {
     pub fn put(&mut self, v: u64, n: u32) {
         for i in (0..n).rev() {
             let bit = ((v >> i) & 1) as u8;
-            if self.bits % 8 == 0 {
+            if self.bits.is_multiple_of(8) {
                 self.buf.push(0);
             }
             let last = self.buf.last_mut().unwrap();
