@@ -9,13 +9,33 @@ use crate::predict::{self, EdgeAvail, IntraParams};
 use crate::quant::PlaneQuant;
 
 pub mod prof {
+    //! Stage timings, printed with `AV1_PROF=1`. When it is not set no clock is
+    //! read and no shared counter is touched (the stages run once per block).
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
     pub static T: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-    pub fn add(i: usize, t: std::time::Instant) {
-        T[i].fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    fn enabled() -> bool {
+        static ON: OnceLock<bool> = OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("AV1_PROF").is_some())
+    }
+    /// Start of a timed stage (`None` when profiling is off).
+    pub fn start() -> Option<Instant> {
+        enabled().then(Instant::now)
+    }
+    pub fn add(i: usize, t: Option<Instant>) {
+        if let Some(t) = t {
+            T[i].fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+    }
+    /// Count one call of a stage (reported in units of 1e9).
+    pub fn count(i: usize) {
+        if enabled() {
+            T[i].fetch_add(1_000_000_000, Ordering::Relaxed);
+        }
     }
     pub fn report() {
-        if std::env::var("AV1_PROF").is_ok() {
+        if enabled() {
             let names = ["model", "luma_rd", "txsize", "luma_final", "chroma", "calls", "lf", "cdef"];
             for (i, n) in names.iter().enumerate() {
                 eprintln!("{n}: {:.3}", T[i].load(Ordering::Relaxed) as f64 / 1e9);
@@ -668,8 +688,8 @@ impl Encoder {
         let use_angle = bsize >= BlockSize::B8x8;
 
         // ---- luma: model ranking
-        prof::T[5].fetch_add(1_000_000_000, std::sync::atomic::Ordering::Relaxed);
-        let t0 = std::time::Instant::now();
+        prof::count(5);
+        let t0 = prof::start();
         let mut ranked: Vec<(f64, Modes)> = Vec::with_capacity(80);
         let model_tx = if self.lossless { TxSize::T4x4 } else { max_tx };
         let env = self.model_env(0, &bp, model_tx);
@@ -706,7 +726,7 @@ impl Encoder {
         let top_k = 3.min(ranked.len());
         sort_front(&mut ranked, top_k);
         prof::add(0, t0);
-        let t0 = std::time::Instant::now();
+        let t0 = prof::start();
 
         // ---- luma: RD of the best candidates at the largest transform
         let mut best_y = (i64::MAX, Modes::default());
@@ -746,7 +766,7 @@ impl Encoder {
         }
         let ym = best_y.1;
         prof::add(1, t0);
-        let t0 = std::time::Instant::now();
+        let t0 = prof::start();
 
         // ---- luma: transform size of the winner (largest and one split)
         let mut tx_cands = [max_tx, max_tx];
@@ -805,7 +825,7 @@ impl Encoder {
         s.give(cand);
         let tx = best_tx.1;
         prof::add(2, t0);
-        let t0 = std::time::Instant::now();
+        let t0 = prof::start();
         bp.luma_tx = tx;
         let yr = if best_tx.3 + 1 == ntx {
             best_tx.2
@@ -837,7 +857,7 @@ impl Encoder {
         let mut coef_rate = yr.rate;
 
         prof::add(3, t0);
-        let t0 = std::time::Instant::now();
+        let t0 = prof::start();
         // ---- chroma
         if has_chroma {
             let uvtx = if self.lossless { TxSize::T4x4 } else { uv_tx_size(bsize, self.ssx, self.ssy) };

@@ -403,14 +403,14 @@ impl Encoder {
         }
 
         // Loop filtering
-        let t0 = std::time::Instant::now();
+        let t0 = search::prof::start();
         let lf = if self.lossless {
             obu::LoopFilterParams { level: [0; 4], sharpness: 0 }
         } else {
             crate::lf::pick_and_apply(self)
         };
         search::prof::add(6, t0);
-        let t0 = std::time::Instant::now();
+        let t0 = search::prof::start();
         let cdef = if self.cfg.enable_cdef && !self.lossless {
             Some(crate::cdef::pick_and_apply(self, &sbs).unwrap_or(obu::CdefParams {
                 damping: 3,
