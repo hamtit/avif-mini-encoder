@@ -341,6 +341,7 @@ impl Encoder {
 
     /// Encode the frame and return the OBUs (sequence header + frame).
     pub fn encode(&mut self, seq: &obu::SequenceHeader) -> Vec<u8> {
+        search::prof::refresh();
         let tune = self.cfg.tune_iq;
         if tune && !self.lossless {
             self.compute_ssim_scaling();

@@ -11,13 +11,17 @@ use crate::quant::PlaneQuant;
 pub mod prof {
     //! Stage timings, printed with `AV1_PROF=1`. When it is not set no clock is
     //! read and no shared counter is touched (the stages run once per block).
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Instant;
     pub static T: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    static ON: AtomicBool = AtomicBool::new(false);
+    /// Read `AV1_PROF` again; called at the start of every encode, so the
+    /// per-block checks need no environment lookup.
+    pub fn refresh() {
+        ON.store(std::env::var_os("AV1_PROF").is_some(), Ordering::Relaxed);
+    }
     fn enabled() -> bool {
-        static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("AV1_PROF").is_some())
+        ON.load(Ordering::Relaxed)
     }
     /// Start of a timed stage (`None` when profiling is off).
     pub fn start() -> Option<Instant> {
