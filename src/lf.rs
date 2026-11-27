@@ -247,7 +247,6 @@ fn sse(a: &Plane, b: &Plane) -> u64 {
 fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -> (i32, Option<Plane>) {
     let mut cache = [-1i64; 64];
     let mut work = unfiltered.clone();
-    let mut best_work: Option<Plane> = None;
     let mut last_lvl = 0i32;
     let mut filt_mid = 0;
     let mut filter_step = if filt_mid < 16 { 4 } else { filt_mid / 4 };
@@ -281,16 +280,6 @@ fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -
                     best_err = e_low;
                 }
                 filt_best = filt_low;
-                if filt_best == 0 {
-                    best_work = None;
-                } else if last_lvl == filt_best {
-                    if let Some(bw) = best_work.as_mut() {
-                        std::mem::swap(&mut work, bw);
-                    } else {
-                        best_work = Some(work.clone());
-                    }
-                    last_lvl = -1;
-                }
             }
         }
         if filt_direction >= 0 && filt_high != filt_mid {
@@ -298,14 +287,6 @@ fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -
             if e_high < best_err - bias {
                 best_err = e_high;
                 filt_best = filt_high;
-                if last_lvl == filt_best {
-                    if let Some(bw) = best_work.as_mut() {
-                        std::mem::swap(&mut work, bw);
-                    } else {
-                        best_work = Some(work.clone());
-                    }
-                    last_lvl = -1;
-                }
             }
         }
         if filt_best == filt_mid {
@@ -318,9 +299,6 @@ fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -
     }
     if filt_best == 0 {
         return (0, None);
-    }
-    if let Some(bw) = best_work {
-        return (filt_best, Some(bw));
     }
     if last_lvl != filt_best {
         work.data.copy_from_slice(&unfiltered.data);
