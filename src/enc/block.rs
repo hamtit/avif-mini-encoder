@@ -599,12 +599,12 @@ impl Encoder {
                             0
                         };
                         let dist = if is64 {
-                            // 64-point transforms drop high-frequency coefficients:
-                            // measure pixel-domain SSE, and when QM distortion
-                            // weighting is active, weight coded coefficients with
-                            // the QM matrix and dropped high frequencies with the
-                            // outer QM weight so 64-point blocks stay on the same
-                            // distortion scale as 32x32 splits.
+                            // 64-point transforms drop half of the coefficients:
+                            // measure the distortion in the pixel domain. QM weighting
+                            // is deliberately not applied here: weighting the dropped
+                            // high frequencies by the QM's (small) outer weight made
+                            // 64-point blocks win far too often and cost +16% BD-rate
+                            // (SSIMULACRA2) / +45% (PSNR) on photos.
                             for r in 0..txh {
                                 s.recon[r * 64..r * 64 + txw].copy_from_slice(&s.pred[r * 64..r * 64 + txw]);
                             }
@@ -625,20 +625,7 @@ impl Encoder {
                                     sse += (d * d) as i64;
                                 }
                             }
-                            let total_unw = sse * 16;
-                            if self.qm_dist {
-                                if let Some((wt, _)) = quant.matrices(tx, tt) {
-                                    let coded_unw = tx_dist(&s.coeff, &s.dq, ncoef, scale, None);
-                                    let coded_qm = tx_dist(&s.coeff, &s.dq, ncoef, scale, Some(wt));
-                                    let dropped_unw = (total_unw - coded_unw).max(0);
-                                    let w_hi = wt[ncoef - 1] as i64;
-                                    coded_qm + ((dropped_unw * (w_hi * w_hi) + 512) >> 10)
-                                } else {
-                                    total_unw
-                                }
-                            } else {
-                                total_unw
-                            }
+                            sse * 16
                         } else {
                             let wt = if self.qm_dist { quant.matrices(tx, tt).map(|m| m.0) } else { None };
                             tx_dist(&s.coeff, &s.dq, ncoef, scale, wt)
