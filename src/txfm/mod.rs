@@ -584,13 +584,8 @@ fn forward_cols_n<const L: usize>(
 }
 
 #[inline(always)]
-fn forward_rows_n<const L: usize>(
-    col_buf: &[i32],
-    tx_size: TxSize,
-    ht: Tx1d,
-    out: &mut [i32],
-    sc: &mut TxScratch,
-) where
+fn forward_rows_n<const L: usize>(col_buf: &[i32], tx_size: TxSize, ht: Tx1d, out: &mut [i32], sc: &mut TxScratch)
+where
     Simd<L>: ScratchLanes,
 {
     let w = tx_size.width();

@@ -532,9 +532,12 @@ pub fn pick_and_apply(e: &mut Encoder, apply_recon: bool) -> Option<CdefParams> 
                     let mut err = [0u64; TOTAL];
                     for (k, &(by, bx)) in list.iter().enumerate() {
                         let (dir, var) = dirs[k];
-                        let ts: [i32; 5] = core::array::from_fn(|i| {
-                            if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] }
-                        });
+                        let ts: [i32; 5] =
+                            core::array::from_fn(
+                                |i| {
+                                    if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] }
+                                },
+                            );
                         let (x0, y0) = (ox + bx * bw, oy + by * bh);
                         search_block(
                             &pad,
@@ -659,7 +662,8 @@ pub fn pick_and_apply(e: &mut Encoder, apply_recon: bool) -> Option<CdefParams> 
             strengths.push(st);
         }
     }
-    let new_bits = if strengths.len() <= 1 { 0 } else { (usize::BITS - (strengths.len() - 1).leading_zeros()) as usize };
+    let new_bits =
+        if strengths.len() <= 1 { 0 } else { (usize::BITS - (strengths.len() - 1).leading_zeros()) as usize };
     let padded_n = 1 << new_bits;
     strengths.resize(padded_n, (0, 0, 0, 0));
     best_bits = new_bits;
@@ -688,11 +692,8 @@ pub fn pick_and_apply(e: &mut Encoder, apply_recon: bool) -> Option<CdefParams> 
             let st = strengths[choice[s]];
             let dirs = &all_dirs[s];
             for p in 0..np {
-                let (pri, sec) = if p == 0 {
-                    (st.0 as i32, sec_value(st.1 as i32))
-                } else {
-                    (st.2 as i32, sec_value(st.3 as i32))
-                };
+                let (pri, sec) =
+                    if p == 0 { (st.0 as i32, sec_value(st.1 as i32)) } else { (st.2 as i32, sec_value(st.3 as i32)) };
                 if pri == 0 && sec == 0 {
                     continue;
                 }

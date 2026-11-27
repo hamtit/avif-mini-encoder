@@ -496,6 +496,7 @@ impl Encoder {
     fn save_ent(&self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, out: &mut ([u8; 16], [u8; 16])) {
         let (x, y, w, h) = plane_region(self, plane, bsize, mi_row, mi_col);
         let (w4, h4) = (w / 4, h / 4);
+        debug_assert!(w4 <= 16 && h4 <= 16, "entropy context save buffer holds at most 64x64");
         out.0[..w4].copy_from_slice(&self.ctx.above_ent[plane][x / 4..x / 4 + w4]);
         out.1[..h4].copy_from_slice(&self.ctx.left_ent[plane][y / 4..y / 4 + h4]);
     }
@@ -503,6 +504,7 @@ impl Encoder {
     fn load_ent(&mut self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, saved: &([u8; 16], [u8; 16])) {
         let (x, y, w, h) = plane_region(self, plane, bsize, mi_row, mi_col);
         let (w4, h4) = (w / 4, h / 4);
+        debug_assert!(w4 <= 16 && h4 <= 16, "entropy context save buffer holds at most 64x64");
         self.ctx.above_ent[plane][x / 4..x / 4 + w4].copy_from_slice(&saved.0[..w4]);
         self.ctx.left_ent[plane][y / 4..y / 4 + h4].copy_from_slice(&saved.1[..h4]);
     }
@@ -694,7 +696,8 @@ impl Encoder {
         // ---- luma: model ranking
         prof::count(5);
         let t0 = prof::start();
-        let mut ranked = [(0.0f64, Modes::default()); 32];
+        // Base modes, 6 angle deltas around the best directional modes, 5 filter-intra modes.
+        let mut ranked = [(0.0f64, Modes::default()); INTRA_MODES + ANGLE_SEARCH_MODES * 6 + 5];
         let mut nranked = 0usize;
         let model_tx = if self.lossless { TxSize::T4x4 } else { max_tx };
         let env = self.model_env(0, &bp, model_tx);
@@ -713,7 +716,7 @@ impl Encoder {
         }
         if use_angle && !dbg("AV1_NO_ANGLE") {
             // Angle deltas only around the two best directional modes.
-            let mut dirs = [(0.0f64, 0u8); 8];
+            let mut dirs = [(0.0f64, 0u8); INTRA_MODES];
             let mut ndirs = 0usize;
             for &(cost, m) in &ranked[..nranked] {
                 if is_directional(m.y_mode) {

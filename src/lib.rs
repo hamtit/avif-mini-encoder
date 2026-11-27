@@ -189,13 +189,7 @@ fn prepare_encode<'a>(
     if width == 0 || height == 0 || width > 65536 || height > 65536 {
         return Err(Error::InvalidDimensions { width, height });
     }
-    // Frames exceeding AV1's single-tile limits (4096 wide, 4096 * 2304 samples)
-    // require mandatory multi-tile encoding regardless of thread count.
-    let mi_cols = 2 * width.div_ceil(8);
-    let mi_rows = 2 * height.div_ceil(8);
-    if obu::tile_limits(mi_cols, mi_rows).min_tiles_log2 > 0 {
-        return Err(Error::MultiTileUnsupported { width, height });
-    }
+    // Frames over AV1's single-tile limits get mandatory tiles (see `choose_tile_grid`).
     // Validate the planes so a short buffer is an error, not a panic. This runs
     // after the size limits, so the products below cannot overflow.
     let (ssx, ssy) = if chroma == Chroma::Yuv444 { (0, 0) } else { (1, 1) };
@@ -253,8 +247,7 @@ pub fn encode_av1_threads(
     speed: u8,
     threads: usize,
 ) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
-    let (cfg, p, seq) =
-        prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
+    let (cfg, p, seq) = prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
     let out = raw::encode(cfg, &p, &seq);
     Ok((out.obus, out.recon))
 }
@@ -291,8 +284,7 @@ pub fn encode_av1_obu_threads(
     speed: u8,
     threads: usize,
 ) -> Result<Vec<u8>, Error> {
-    let (cfg, p, seq) =
-        prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
+    let (cfg, p, seq) = prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
     Ok(raw::encode_obu(cfg, &p, &seq))
 }
 
@@ -399,14 +391,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_frames_needing_several_tiles() {
-        let (w, h) = (4104, 8);
-        let y = flat(w, h);
-        let r = encode_av1(&[&y], w, h, Chroma::Mono, None, true, 100, Tune::Psnr, 5);
-        assert_eq!(r.unwrap_err(), Error::MultiTileUnsupported { width: w, height: h });
-        let (w, h) = (4096, 8);
-        let y = flat(w, h);
-        assert!(encode_av1(&[&y], w, h, Chroma::Mono, None, true, 100, Tune::Psnr, 5).is_ok());
+    fn encodes_frames_needing_mandatory_tiles() {
+        // 4104 wide needs two tile columns even with one thread.
+        let (w, h) = (4104, 16);
+        let y: Vec<u8> = (0..w * h).map(|i| ((i % w) * 3 / 50 + (i / w) * 5) as u8).collect();
+        for threads in [1, 2] {
+            let (obus, recon) =
+                encode_av1_threads(&[&y], w, h, Chroma::Mono, None, true, 60, Tune::Psnr, 6, threads).unwrap();
+            assert!(!obus.is_empty());
+            let mse =
+                y.iter().zip(&recon[0]).map(|(&a, &b)| (a as f64 - b as f64).powi(2)).sum::<f64>() / (w * h) as f64;
+            assert!(mse < 4.0, "threads {threads}: mse {mse}");
+        }
     }
 
     #[test]

@@ -9,7 +9,8 @@ use std::fmt;
 pub enum Error {
     /// A side is zero or larger than 65536.
     InvalidDimensions { width: usize, height: usize },
-    /// The frame would need more than one AV1 tile, which is not implemented.
+    /// The frame would need more than one AV1 tile. No longer returned since 0.3.0,
+    /// which encodes the mandatory tiles; kept so existing matches still compile.
     MultiTileUnsupported { width: usize, height: usize },
     /// The number of planes does not match the chroma format.
     PlaneCount { expected: usize, actual: usize },

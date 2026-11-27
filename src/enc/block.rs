@@ -609,6 +609,11 @@ impl Encoder {
                                 s.recon[r * 64..r * 64 + txw].copy_from_slice(&s.pred[r * 64..r * 64 + txw]);
                             }
                             if eob > 0 {
+                                // `s.recon` becomes the final reconstruction for 64-point
+                                // transforms (`best_has_recon`), so use the decoder's exact
+                                // dequantization (24-bit wrap + int16 clamp), not the
+                                // unclamped values from `quantize_fp`/`optimize`.
+                                coef::dequantize(&s.q, sc, eob, quant, tx, tt, &mut s.dq);
                                 txfm::inverse_add(&s.dq, tx, tt, eob, &mut s.recon, 64);
                             }
                             let src = &self.src[plane];

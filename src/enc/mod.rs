@@ -171,30 +171,39 @@ struct TileRect {
     info: TileInfo,
 }
 
-/// Choose a uniform tile grid `(tile_cols_log2, tile_rows_log2)` for multi-threaded
+/// Choose a uniform tile grid `(tile_cols_log2, tile_rows_log2)`: the mandatory
+/// minimum for frames over AV1's single-tile limits, raised for multi-threaded
 /// encoding when `threads >= 2` and the frame is large enough that tile overhead
 /// stays small.
 fn choose_tile_grid(mi_cols: usize, mi_rows: usize, threads: usize) -> (u32, u32) {
-    if threads < 2 {
-        return (0, 0);
-    }
     let sb_cols = mi_cols.div_ceil(16);
     let sb_rows = mi_rows.div_ceil(16);
     let lim = obu::tile_limits(mi_cols, mi_rows);
     let mut cols_log2 = 0u32;
     let mut rows_log2 = 0u32;
-    if sb_cols >= 4 && sb_rows >= 4 {
-        cols_log2 = 1.min(lim.max_cols_log2);
-        if threads >= 4 && sb_cols >= 6 && sb_rows >= 6 {
+    if threads >= 2 {
+        if sb_cols >= 4 && sb_rows >= 4 {
+            cols_log2 = 1.min(lim.max_cols_log2);
+            if threads >= 4 && sb_cols >= 6 && sb_rows >= 6 {
+                rows_log2 = 1.min(lim.max_rows_log2);
+            }
+            if threads >= 8 && sb_cols >= 16 && sb_rows >= 16 {
+                cols_log2 = 2.min(lim.max_cols_log2);
+            }
+        } else if sb_cols >= 8 {
+            cols_log2 = 1.min(lim.max_cols_log2);
+        } else if sb_rows >= 8 {
             rows_log2 = 1.min(lim.max_rows_log2);
         }
-        if threads >= 8 && sb_cols >= 16 && sb_rows >= 16 {
-            cols_log2 = 2.min(lim.max_cols_log2);
-        }
-    } else if sb_cols >= 8 {
-        cols_log2 = 1.min(lim.max_cols_log2);
-    } else if sb_rows >= 8 {
-        rows_log2 = 1.min(lim.max_rows_log2);
+    }
+    // Frames over AV1's single-tile limits (4096 wide, 4096 * 2304 samples) need
+    // mandatory tiles regardless of the thread count.
+    cols_log2 = cols_log2.max(lim.min_cols_log2);
+    while cols_log2 + rows_log2 < lim.min_tiles_log2 && rows_log2 < lim.max_rows_log2 {
+        rows_log2 += 1;
+    }
+    while cols_log2 + rows_log2 < lim.min_tiles_log2 && cols_log2 < lim.max_cols_log2 {
+        cols_log2 += 1;
     }
     (cols_log2, rows_log2)
 }
@@ -854,6 +863,10 @@ impl Encoder {
             let tile_bytes = sw.finish();
             if ti + 1 < num_tiles {
                 // tile_size_minus_1 (4 bytes little-endian; tile_size_bytes_minus_1 == 3).
+                assert!(
+                    !tile_bytes.is_empty() && tile_bytes.len() - 1 <= u32::MAX as usize,
+                    "tile size must fit the 4-byte tile_size_minus_1"
+                );
                 let sz_minus_1 = (tile_bytes.len() - 1) as u32;
                 payload.extend_from_slice(&sz_minus_1.to_le_bytes());
             }
