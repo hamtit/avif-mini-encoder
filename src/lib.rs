@@ -172,12 +172,10 @@ pub fn encode_av1(
     encode_av1_threads(planes, width, height, chroma, color, full_range, qindex, tune, speed, 1)
 }
 
-/// Like [`encode_av1`], using up to `threads` threads for the stages that can
-/// run in parallel (currently the CDEF strength search). The output is
-/// byte-identical for every thread count.
-#[allow(clippy::too_many_arguments)]
-pub fn encode_av1_threads(
-    planes: &[&[u8]],
+/// Validate encode arguments and construct `(FrameConfig, plane descriptors, SequenceHeader)`.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn prepare_encode<'a>(
+    planes: &'a [&'a [u8]],
     width: usize,
     height: usize,
     chroma: Chroma,
@@ -187,12 +185,12 @@ pub fn encode_av1_threads(
     tune: Tune,
     speed: u8,
     threads: usize,
-) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
+) -> Result<(FrameConfig, Vec<(&'a [u8], usize, usize, usize)>, SequenceHeader), Error> {
     if width == 0 || height == 0 || width > 65536 || height > 65536 {
         return Err(Error::InvalidDimensions { width, height });
     }
-    // Only one tile is written: the frame must fit AV1's single-tile limits
-    // (4096 wide, 4096 * 2304 samples).
+    // Frames exceeding AV1's single-tile limits (4096 wide, 4096 * 2304 samples)
+    // require mandatory multi-tile encoding regardless of thread count.
     let mi_cols = 2 * width.div_ceil(8);
     let mi_rows = 2 * height.div_ceil(8);
     if obu::tile_limits(mi_cols, mi_rows).min_tiles_log2 > 0 {
@@ -237,8 +235,65 @@ pub fn encode_av1_threads(
         full_range,
         enable_cdef: cfg.enable_cdef,
     };
+    Ok((cfg, p, seq))
+}
+
+/// Like [`encode_av1`], using up to `threads` threads for parallel tile
+/// encoding and CDEF strength search.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_av1_threads(
+    planes: &[&[u8]],
+    width: usize,
+    height: usize,
+    chroma: Chroma,
+    color: Option<ColorDesc>,
+    full_range: bool,
+    qindex: u8,
+    tune: Tune,
+    speed: u8,
+    threads: usize,
+) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
+    let (cfg, p, seq) =
+        prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
     let out = raw::encode(cfg, &p, &seq);
     Ok((out.obus, out.recon))
+}
+
+/// Like [`encode_av1`], returning only the AV1 OBUs without allocating or
+/// computing the post-CDEF reconstructed planes.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_av1_obu(
+    planes: &[&[u8]],
+    width: usize,
+    height: usize,
+    chroma: Chroma,
+    color: Option<ColorDesc>,
+    full_range: bool,
+    qindex: u8,
+    tune: Tune,
+    speed: u8,
+) -> Result<Vec<u8>, Error> {
+    encode_av1_obu_threads(planes, width, height, chroma, color, full_range, qindex, tune, speed, 1)
+}
+
+/// Like [`encode_av1_threads`], returning only the AV1 OBUs without allocating
+/// or computing the post-CDEF reconstructed planes.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_av1_obu_threads(
+    planes: &[&[u8]],
+    width: usize,
+    height: usize,
+    chroma: Chroma,
+    color: Option<ColorDesc>,
+    full_range: bool,
+    qindex: u8,
+    tune: Tune,
+    speed: u8,
+    threads: usize,
+) -> Result<Vec<u8>, Error> {
+    let (cfg, p, seq) =
+        prepare_encode(planes, width, height, chroma, color, full_range, qindex, tune, speed, threads)?;
+    Ok(raw::encode_obu(cfg, &p, &seq))
 }
 
 /// Arguments of one [`encode_av1`] call, for [`encode_av1_pair`].
@@ -326,6 +381,12 @@ pub mod raw {
             })
             .collect();
         Output { obus, recon }
+    }
+
+    /// Encode to AV1 OBUs only, skipping post-CDEF reconstruction.
+    pub fn encode_obu(cfg: FrameConfig, planes: &[(&[u8], usize, usize, usize)], seq: &SequenceHeader) -> Vec<u8> {
+        let mut e = Encoder::new(cfg, planes);
+        e.encode_obu(seq)
     }
 }
 
@@ -434,5 +495,59 @@ mod tests {
         let srgb = Some(ColorDesc { primaries: 1, transfer: 13, matrix: 0 });
         let r = encode_av1(&[&y, &c, &c], 16, 16, Chroma::Yuv420, srgb, true, 100, Tune::Iq, 5);
         assert_eq!(r.unwrap_err(), Error::IdentityRequires444);
+    }
+
+    #[test]
+    fn obu_api_and_multi_tile_sanity() {
+        let (w, h) = (512, 512);
+        let mut y = vec![0u8; w * h];
+        let mut seed = 0x1357_9BDFu32;
+        for r in 0..h {
+            for c in 0..w {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let grad = ((r * 160 / h) + (c * 55 / w)) as i32;
+                let tex = ((((r * 3 + c * 5) % 29) as i32 - 14) * 2) + ((seed >> 27) as i32 - 16);
+                y[r * w + c] = (grad + tex).clamp(0, 255) as u8;
+            }
+        }
+        let u = vec![120u8; (w / 2) * (h / 2)];
+        let v = vec![136u8; (w / 2) * (h / 2)];
+        let planes = [&y[..], &u[..], &v[..]];
+
+        let (obu1, rec1) = encode_av1_threads(&planes, w, h, Chroma::Yuv420, None, true, 120, Tune::Iq, 5, 1).unwrap();
+        let obu1_only = encode_av1_obu_threads(&planes, w, h, Chroma::Yuv420, None, true, 120, Tune::Iq, 5, 1).unwrap();
+        assert_eq!(obu1, obu1_only);
+
+        let (obu2, rec2) = encode_av1_threads(&planes, w, h, Chroma::Yuv420, None, true, 120, Tune::Iq, 5, 2).unwrap();
+        let (obu4, rec4) = encode_av1_threads(&planes, w, h, Chroma::Yuv420, None, true, 120, Tune::Iq, 5, 4).unwrap();
+        let obu4_only = encode_av1_obu_threads(&planes, w, h, Chroma::Yuv420, None, true, 120, Tune::Iq, 5, 4).unwrap();
+        assert_eq!(obu4, obu4_only);
+
+        let psnr = |rec: &[u8]| -> f64 {
+            let mse: f64 = y
+                .iter()
+                .zip(rec)
+                .map(|(&a, &b)| {
+                    let d = a as f64 - b as f64;
+                    d * d
+                })
+                .sum::<f64>()
+                / (w * h) as f64;
+            10.0 * (255.0 * 255.0 / mse.max(1e-9)).log10()
+        };
+        let p1 = psnr(&rec1[0]);
+        let p2 = psnr(&rec2[0]);
+        let p4 = psnr(&rec4[0]);
+        eprintln!(
+            "512x512 q120: 1t={}B ({:.2}dB), 2t={}B ({:.2}dB), 4t={}B ({:.2}dB)",
+            obu1.len(),
+            p1,
+            obu2.len(),
+            p2,
+            obu4.len(),
+            p4
+        );
+        assert!((p1 - p4).abs() < 1.0, "PSNR drift too large: 1t={p1:.2} 4t={p4:.2}");
+        assert!(obu4.len() < obu1.len() * 103 / 100, "4-tile overhead too large: 1t={} 4t={}", obu1.len(), obu4.len());
     }
 }

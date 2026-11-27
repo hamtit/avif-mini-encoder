@@ -7,7 +7,6 @@ license = "BSD-2-Clause"
 publish = false
 
 [dependencies]
-avif-serialize = "0.8"
 
 [profile.release]
 opt-level = 3

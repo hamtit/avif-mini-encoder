@@ -243,43 +243,69 @@ fn sse(a: &Plane, b: &Plane) -> u64 {
 }
 
 /// libaom's search_filter_level for one plane (dir 2 = both luma directions).
-fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -> i32 {
+/// Returns `(best_level, Some(filtered_plane))` when `best_level > 0`, or `(0, None)`.
+fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -> (i32, Option<Plane>) {
     let mut cache = [-1i64; 64];
     let mut work = unfiltered.clone();
-    let mut try_level = |lvl: i32| -> i64 {
+    let mut best_work: Option<Plane> = None;
+    let mut last_lvl = 0i32;
+    let mut filt_mid = 0;
+    let mut filter_step = if filt_mid < 16 { 4 } else { filt_mid / 4 };
+    let err0 = sse(&e.src[plane], unfiltered) as i64;
+    cache[0] = err0;
+    let mut best_err = err0;
+    let mut filt_best = 0;
+    let mut filt_direction = 0;
+
+    let mut eval = |lvl: i32, work: &mut Plane, last_lvl: &mut i32| -> i64 {
         if cache[lvl as usize] >= 0 {
             return cache[lvl as usize];
         }
         work.data.copy_from_slice(&unfiltered.data);
-        filter_plane(e, plane, [lvl, lvl], sharpness, &mut work);
-        let err = sse(&e.src[plane], &work) as i64;
+        filter_plane(e, plane, [lvl, lvl], sharpness, work);
+        *last_lvl = lvl;
+        let err = sse(&e.src[plane], work) as i64;
         cache[lvl as usize] = err;
         err
     };
-    let mut filt_mid = 0;
-    let mut filter_step = if filt_mid < 16 { 4 } else { filt_mid / 4 };
-    let mut best_err = try_level(filt_mid);
-    let mut filt_best = filt_mid;
-    let mut filt_direction = 0;
+
     while filter_step > 0 {
         let filt_high = (filt_mid + filter_step).min(MAX_LOOP_FILTER);
         let filt_low = (filt_mid - filter_step).max(0);
         let mut bias = (best_err >> (15 - (filt_mid / 8))) * filter_step as i64;
         bias >>= 1; // tx_mode != ONLY_4X4
         if filt_direction <= 0 && filt_low != filt_mid {
-            let e_low = try_level(filt_low);
+            let e_low = eval(filt_low, &mut work, &mut last_lvl);
             if e_low < best_err + bias {
                 if e_low < best_err {
                     best_err = e_low;
                 }
                 filt_best = filt_low;
+                if filt_best == 0 {
+                    best_work = None;
+                } else if last_lvl == filt_best {
+                    if let Some(bw) = best_work.as_mut() {
+                        std::mem::swap(&mut work, bw);
+                    } else {
+                        best_work = Some(work.clone());
+                    }
+                    last_lvl = -1;
+                }
             }
         }
         if filt_direction >= 0 && filt_high != filt_mid {
-            let e_high = try_level(filt_high);
+            let e_high = eval(filt_high, &mut work, &mut last_lvl);
             if e_high < best_err - bias {
                 best_err = e_high;
                 filt_best = filt_high;
+                if last_lvl == filt_best {
+                    if let Some(bw) = best_work.as_mut() {
+                        std::mem::swap(&mut work, bw);
+                    } else {
+                        best_work = Some(work.clone());
+                    }
+                    last_lvl = -1;
+                }
             }
         }
         if filt_best == filt_mid {
@@ -290,7 +316,17 @@ fn search_level(e: &Encoder, plane: usize, sharpness: i32, unfiltered: &Plane) -
             filt_mid = filt_best;
         }
     }
-    filt_best
+    if filt_best == 0 {
+        return (0, None);
+    }
+    if let Some(bw) = best_work {
+        return (filt_best, Some(bw));
+    }
+    if last_lvl != filt_best {
+        work.data.copy_from_slice(&unfiltered.data);
+        filter_plane(e, plane, [filt_best, filt_best], sharpness, &mut work);
+    }
+    (filt_best, Some(work))
 }
 
 /// Pick the filter levels, filter the reconstruction and return the frame
@@ -310,25 +346,29 @@ pub fn pick_and_apply(e: &mut Encoder) -> LoopFilterParams {
         sharpness = sharpness.min(max);
     }
     let mut level = [0i32; 4];
-    let y = search_level(e, 0, sharpness, &e.rec[0]);
+    let (y, y_filt) = search_level(e, 0, sharpness, &e.rec[0]);
     level[0] = y;
     level[1] = y;
-    if e.num_planes > 1 {
-        level[2] = search_level(e, 1, sharpness, &e.rec[1]);
-        level[3] = search_level(e, 2, sharpness, &e.rec[2]);
+    let mut u_filt = None;
+    let mut v_filt = None;
+    // Chroma levels are not coded when luma is off, so skip searching U/V.
+    if e.num_planes > 1 && (level[0] != 0 || level[1] != 0) {
+        let (u, uf) = search_level(e, 1, sharpness, &e.rec[1]);
+        let (v, vf) = search_level(e, 2, sharpness, &e.rec[2]);
+        level[2] = u;
+        level[3] = v;
+        u_filt = uf;
+        v_filt = vf;
     }
-    if level[0] == 0 && level[1] == 0 {
-        // Chroma levels are not coded when luma is off.
-        level[2] = 0;
-        level[3] = 0;
+    if let Some(p) = y_filt {
+        e.rec[0] = p;
     }
-    let mut rec = std::mem::take(&mut e.rec);
-    filter_plane(e, 0, [level[0], level[1]], sharpness, &mut rec[0]);
-    if e.num_planes > 1 {
-        filter_plane(e, 1, [level[2], level[2]], sharpness, &mut rec[1]);
-        filter_plane(e, 2, [level[3], level[3]], sharpness, &mut rec[2]);
+    if let Some(p) = u_filt {
+        e.rec[1] = p;
     }
-    e.rec = rec;
+    if let Some(p) = v_filt {
+        e.rec[2] = p;
+    }
     LoopFilterParams {
         level: [level[0] as u8, level[1] as u8, level[2] as u8, level[3] as u8],
         sharpness: sharpness as u8,

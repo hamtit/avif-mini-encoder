@@ -236,6 +236,6 @@ impl FrameHeader {
             }
             w.flag(true); // tx_mode_select
         }
-        w.flag(false); // reduced_tx_set
+        w.flag(crate::consts::REDUCED_TX_SET); // reduced_tx_set
     }
 }

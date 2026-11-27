@@ -3,7 +3,7 @@
 
 use crate::cdf::COST_SHIFT;
 use crate::coef::rdcost;
-use crate::enc::{Decisions, Encoder};
+use crate::enc::Encoder;
 use crate::frame::Plane;
 use crate::obu::CdefParams;
 
@@ -485,7 +485,7 @@ fn sec_value(code: i32) -> i32 {
     code + (code == 3) as i32
 }
 
-pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams> {
+pub fn pick_and_apply(e: &mut Encoder, apply_recon: bool) -> Option<CdefParams> {
     let q = e.cfg.base_q as i32;
     let adaptive = e.cfg.tune_iq;
     if adaptive && q <= 32 {
@@ -497,69 +497,68 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
     let nhfb = e.mi_cols.div_ceil(16);
     let damping = 3 + (q >> 6);
     let np = e.num_planes;
-    let pre: Vec<Plane> = e.rec.clone();
-    let srcs: Vec<Src> = (0..np)
-        .map(|p| {
-            let (sx, sy) = if p == 0 { (0, 0) } else { (e.ssx, e.ssy) };
-            Src { p: &pre[p], w: ((e.mi_cols * 4) >> sx) as isize, h: ((e.mi_rows * 4) >> sy) as isize }
-        })
-        .collect();
     // Per-filter-block statistics are independent, so rows of filter blocks
     // are searched in parallel; results are gathered in raster order.
     let thr = e.cfg.threads;
-    let ee: &Encoder = e;
-    let rows: Vec<Vec<FbSearch>> = crate::parallel::par_map(nvfb, thr, |fbr| {
-        let mut list = Vec::new();
-        let mut pad = Pad::new();
-        let mut res = Vec::new();
-        for fbc in 0..nhfb {
-            block_list(ee, fbr, fbc, &mut list);
-            if list.is_empty() {
-                continue;
-            }
-            let dirs: Vec<(usize, i32)> =
-                list.iter().map(|&(by, bx)| find_dir(&pre[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
-            let mut m = [[0u64; TOTAL]; 2];
-            for p in 0..np {
-                let (sx, sy) = if p == 0 { (0, 0) } else { (ee.ssx, ee.ssy) };
-                let bw = 8 >> sx;
-                let bh = 8 >> sy;
-                pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
-                let damp = damping - (p > 0) as i32;
-                let s = &ee.src[p];
-                let ox = (fbc * 64) >> sx;
-                let oy = (fbr * 64) >> sy;
-                let mut err = [0u64; TOTAL];
-                for (k, &(by, bx)) in list.iter().enumerate() {
-                    let (dir, var) = dirs[k];
-                    let ts: [i32; 5] =
-                        core::array::from_fn(|i| if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] });
-                    let (x0, y0) = (ox + bx * bw, oy + by * bh);
-                    search_block(
-                        &pad,
-                        &s.data[y0 * s.stride + x0..],
-                        s.stride,
-                        x0,
-                        y0,
-                        bw,
-                        bh,
-                        &ts,
-                        dir,
-                        damp,
-                        &mut err,
-                    );
+    let rows: Vec<Vec<FbSearch>> = {
+        let srcs: Vec<Src> = (0..np)
+            .map(|p| {
+                let (sx, sy) = if p == 0 { (0, 0) } else { (e.ssx, e.ssy) };
+                Src { p: &e.rec[p], w: ((e.mi_cols * 4) >> sx) as isize, h: ((e.mi_rows * 4) >> sy) as isize }
+            })
+            .collect();
+        let ee: &Encoder = e;
+        crate::parallel::par_map(nvfb, thr, |fbr| {
+            let mut list = Vec::new();
+            let mut pad = Pad::new();
+            let mut res = Vec::new();
+            for fbc in 0..nhfb {
+                block_list(ee, fbr, fbc, &mut list);
+                if list.is_empty() {
+                    continue;
                 }
-                for gi in 0..TOTAL {
-                    m[(p > 0) as usize][gi] += err[gi];
+                let dirs: Vec<(usize, i32)> =
+                    list.iter().map(|&(by, bx)| find_dir(&ee.rec[0], fbc * 64 + bx * 8, fbr * 64 + by * 8)).collect();
+                let mut m = [[0u64; TOTAL]; 2];
+                for p in 0..np {
+                    let (sx, sy) = if p == 0 { (0, 0) } else { (ee.ssx, ee.ssy) };
+                    let bw = 8 >> sx;
+                    let bh = 8 >> sy;
+                    pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
+                    let damp = damping - (p > 0) as i32;
+                    let s = &ee.src[p];
+                    let ox = (fbc * 64) >> sx;
+                    let oy = (fbr * 64) >> sy;
+                    let mut err = [0u64; TOTAL];
+                    for (k, &(by, bx)) in list.iter().enumerate() {
+                        let (dir, var) = dirs[k];
+                        let ts: [i32; 5] = core::array::from_fn(|i| {
+                            if p == 0 { adjust_strength(PRICONV[i], var) } else { PRICONV[i] }
+                        });
+                        let (x0, y0) = (ox + bx * bw, oy + by * bh);
+                        search_block(
+                            &pad,
+                            &s.data[y0 * s.stride + x0..],
+                            s.stride,
+                            x0,
+                            y0,
+                            bw,
+                            bh,
+                            &ts,
+                            dir,
+                            damp,
+                            &mut err,
+                        );
+                    }
+                    for gi in 0..TOTAL {
+                        m[(p > 0) as usize][gi] += err[gi];
+                    }
                 }
+                res.push((fbr, fbc, m, dirs));
             }
-            res.push((fbr, fbc, m, dirs));
-        }
-        res
-    });
-    let mut list = Vec::new();
-    let mut out = vec![0u8; 64 * 64];
-    let mut pad = Pad::new();
+            res
+        })
+    };
     // mse[plane type][sb][strength]
     let mut mse: [Vec<[u64; TOTAL]>; 2] = [Vec::new(), Vec::new()];
     let mut sb_index = Vec::new();
@@ -610,7 +609,6 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
     }
     let n = 1 << best_bits;
     // Per-SB choice.
-    let mut idx = vec![0i8; nvfb * nhfb];
     let mut choice = vec![0usize; sb_count];
     for s in 0..sb_count {
         let mut best = u64::MAX;
@@ -624,12 +622,10 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
                 choice[s] = gi;
             }
         }
-        let (r, c) = sb_index[s];
-        idx[r * nhfb + c] = choice[s] as i8;
     }
     // Convert search indices to coded strengths (pri * 4 + sec code), then
     // the adaptive reduction / zeroing.
-    let mut strengths = Vec::with_capacity(n);
+    let mut raw_strengths = Vec::with_capacity(n);
     for gi in 0..n {
         let to_code = |s: usize| (PRICONV[s / 2] as usize) * SEC_STRENGTHS + SECCONV[s % 2] as usize;
         let mut ys = to_code(best0[gi]);
@@ -649,33 +645,72 @@ pub fn pick_and_apply(e: &mut Encoder, _sbs: &[Decisions]) -> Option<CdefParams>
                 }
             }
         }
-        strengths.push(((ys / 4) as u8, (ys % 4) as u8, (uvs / 4) as u8, (uvs % 4) as u8));
+        raw_strengths.push(((ys / 4) as u8, (ys % 4) as u8, (uvs / 4) as u8, (uvs % 4) as u8));
     }
-    // Apply.
-    for (s, &(fbr, fbc)) in sb_index.iter().enumerate() {
-        block_list(e, fbr, fbc, &mut list);
-        let st = strengths[choice[s]];
-        let dirs = &all_dirs[s];
-        for p in 0..np {
-            let (pri, sec) =
-                if p == 0 { (st.0 as i32, sec_value(st.1 as i32)) } else { (st.2 as i32, sec_value(st.3 as i32)) };
-            if pri == 0 && sec == 0 {
-                continue;
-            }
-            let (sx, sy) = if p == 0 { (0, 0) } else { (e.ssx, e.ssy) };
-            pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
-            filter_fb(e, p, &pad, fbr, fbc, &list, dirs, pri, sec, damping, &mut out);
-            let bw = 8 >> sx;
-            let bh = 8 >> sy;
-            let ox = (fbc * 64) >> sx;
-            let oy = (fbr * 64) >> sy;
-            let rec = &mut e.rec[p];
-            for &(by, bx) in &list {
-                for i in 0..bh {
-                    let y = oy + by * bh + i;
-                    let x = ox + bx * bw;
-                    let o = (by * bh + i) * 64 + bx * bw;
-                    rec.data[y * rec.stride + x..y * rec.stride + x + bw].copy_from_slice(&out[o..o + bw]);
+    // Deduplicate strengths (especially zero strengths after adaptive zeroing)
+    // and shrink `best_bits` when fewer distinct entries remain.
+    let mut strengths: Vec<(u8, u8, u8, u8)> = Vec::with_capacity(n);
+    let mut remap = [0usize; 8];
+    for (gi, &st) in raw_strengths.iter().enumerate() {
+        if let Some(pos) = strengths.iter().position(|&x| x == st) {
+            remap[gi] = pos;
+        } else {
+            remap[gi] = strengths.len();
+            strengths.push(st);
+        }
+    }
+    let new_bits = if strengths.len() <= 1 { 0 } else { (usize::BITS - (strengths.len() - 1).leading_zeros()) as usize };
+    let padded_n = 1 << new_bits;
+    strengths.resize(padded_n, (0, 0, 0, 0));
+    best_bits = new_bits;
+    let mut idx = vec![0i8; nvfb * nhfb];
+    for s in 0..sb_count {
+        choice[s] = remap[choice[s]];
+        let (r, c) = sb_index[s];
+        idx[r * nhfb + c] = choice[s] as i8;
+    }
+    // Apply only when the caller needs the reconstructed pixels and at least
+    // one strength is non-zero.
+    let any_nonzero = strengths.iter().any(|&st| st != (0, 0, 0, 0));
+    if apply_recon && any_nonzero {
+        let pre: Vec<Plane> = e.rec.clone();
+        let srcs: Vec<Src> = (0..np)
+            .map(|p| {
+                let (sx, sy) = if p == 0 { (0, 0) } else { (e.ssx, e.ssy) };
+                Src { p: &pre[p], w: ((e.mi_cols * 4) >> sx) as isize, h: ((e.mi_rows * 4) >> sy) as isize }
+            })
+            .collect();
+        let mut list = Vec::new();
+        let mut out = vec![0u8; 64 * 64];
+        let mut pad = Pad::new();
+        for (s, &(fbr, fbc)) in sb_index.iter().enumerate() {
+            block_list(e, fbr, fbc, &mut list);
+            let st = strengths[choice[s]];
+            let dirs = &all_dirs[s];
+            for p in 0..np {
+                let (pri, sec) = if p == 0 {
+                    (st.0 as i32, sec_value(st.1 as i32))
+                } else {
+                    (st.2 as i32, sec_value(st.3 as i32))
+                };
+                if pri == 0 && sec == 0 {
+                    continue;
+                }
+                let (sx, sy) = if p == 0 { (0, 0) } else { (e.ssx, e.ssy) };
+                pad.load(&srcs[p], (fbc * 64) >> sx, (fbr * 64) >> sy, 64 >> sx, 64 >> sy);
+                filter_fb(e, p, &pad, fbr, fbc, &list, dirs, pri, sec, damping, &mut out);
+                let bw = 8 >> sx;
+                let bh = 8 >> sy;
+                let ox = (fbc * 64) >> sx;
+                let oy = (fbr * 64) >> sy;
+                let rec = &mut e.rec[p];
+                for &(by, bx) in &list {
+                    for i in 0..bh {
+                        let y = oy + by * bh + i;
+                        let x = ox + bx * bw;
+                        let o = (by * bh + i) * 64 + bx * bw;
+                        rec.data[y * rec.stride + x..y * rec.stride + x + bw].copy_from_slice(&out[o..o + bw]);
+                    }
                 }
             }
         }

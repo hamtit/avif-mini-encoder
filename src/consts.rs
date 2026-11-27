@@ -289,6 +289,10 @@ pub const EXT_TX_SET_DTT4_IDTX: usize = 2;
 pub const EXT_TX_SET_DTT4_IDTX_1DDCT: usize = 3;
 pub const NUM_EXT_TX_SET: [usize; 6] = [1, 2, 5, 7, 12, 16];
 
+/// Use AV1's reduced intra transform set (`EXT_TX_SET_DTT4_IDTX`, 5 types
+/// instead of 7): cheaper transform-type signalling and fewer candidates to search.
+pub const REDUCED_TX_SET: bool = true;
+
 /// Intra transform set type for a transform size.
 pub fn intra_tx_set(tx: TxSize, reduced: bool) -> usize {
     let sqr_up = tx.sqr_up();
