@@ -12,7 +12,7 @@ use crate::txfm;
 
 /// Transform types tried for an intra luma block (libaom's reduced intra set).
 pub fn tx_type_candidates(tx: TxSize, intra_dir: u8, out: &mut [TxType; 16]) -> usize {
-    let set = intra_tx_set(tx, false);
+    let set = intra_tx_set(tx, REDUCED_TX_SET);
     if set == EXT_TX_SET_DCTONLY {
         out[0] = DCT_DCT;
         return 1;
@@ -37,7 +37,7 @@ pub fn tx_type_candidates(tx: TxSize, intra_dir: u8, out: &mut [TxType; 16]) -> 
 /// Transform type of a chroma transform block (derived from the uv mode).
 pub fn uv_tx_type(uv_mode: u8, tx: TxSize) -> TxType {
     let t = MODE_TO_TXFM[uv_mode as usize];
-    let set = intra_tx_set(tx, false);
+    let set = intra_tx_set(tx, REDUCED_TX_SET);
     if tx_in_set(set, t) { t } else { DCT_DCT }
 }
 
@@ -116,6 +116,9 @@ pub struct Scratch {
     pub levels: Vec<u8>,
     pub cfl_luma: Vec<i16>,
     pub recon: Vec<u8>,
+    /// Cached vertical 1-D forward transforms indexed by `Tx1d as usize`
+    /// (only used when `ncand > 1`, where `txw <= 16 && txh <= 16`).
+    pub fwd_col: Box<[[i32; 16 * 16]; 4]>,
     /// Set around ranking-only calls: a single-transform-block plane skips
     /// the reconstruction, which the final coding pass rebuilds.
     pub rank_only: bool,
@@ -179,6 +182,7 @@ impl Scratch {
             levels: vec![0; LEVELS_BUF],
             cfl_luma: vec![0; 32 * 32],
             recon: vec![0; 64 * 64],
+            fwd_col: Box::new([[0; 16 * 16]; 4]),
             rank_only: false,
             rec_plane: None,
             replay_plane: None,
@@ -326,7 +330,7 @@ impl Encoder {
         quant: &PlaneQuant,
         rdmult: i64,
         s: &mut Scratch,
-        out: Option<(&mut Vec<TxbDec>, &mut Vec<i32>)>,
+        out: Option<(&mut Vec<TxbDec>, &mut Vec<i16>)>,
     ) -> PlaneRd {
         self.try_code_plane(plane, bp, modes, tx, search, quant, rdmult, s, out, None).unwrap()
     }
@@ -342,7 +346,7 @@ impl Encoder {
         quant: &PlaneQuant,
         rdmult: i64,
         s: &mut Scratch,
-        mut out: Option<(&mut Vec<TxbDec>, &mut Vec<i32>)>,
+        mut out: Option<(&mut Vec<TxbDec>, &mut Vec<i16>)>,
         bound: Option<PlaneBound>,
     ) -> Option<PlaneRd> {
         let (ssx, ssy) = if plane == 0 { (0, 0) } else { (self.ssx, self.ssy) };
@@ -373,8 +377,8 @@ impl Encoder {
             smooth_neighbor: if is_directional(mode) { self.smooth_neighbor(plane, bp) } else { false },
         };
         let (bw4, bh4) = (bsize.w4() as isize, bsize.h4() as isize);
-        let mb_to_right = ((self.mi_cols as isize - bw4 - bp.mi_col as isize) * 4) >> ssx;
-        let mb_to_bottom = ((self.mi_rows as isize - bh4 - bp.mi_row as isize) * 4) >> ssy;
+        let mb_to_right = ((self.tile.mi_col_end as isize - bw4 - bp.mi_col as isize) * 4) >> ssx;
+        let mb_to_bottom = ((self.tile.mi_row_end as isize - bh4 - bp.mi_row as isize) * 4) >> ssy;
         let wpx = pw.max(4) as isize;
         let hpx = ph.max(4) as isize;
         let (up_av, left_av) = if plane == 0 {
@@ -439,6 +443,7 @@ impl Encoder {
         let coded = tx.coded();
         let ncoef = coded.width() * coded.height();
         let is64 = tx.width() == 64 || tx.height() == 64;
+        let cache_cols = ncand > 1 && !self.lossless && txw <= 16 && txh <= 16;
 
         let mut total = PlaneRd::default();
         let mut row_off = 0;
@@ -515,6 +520,7 @@ impl Encoder {
                     (s.rec[i].n, s.rec[i].ncoef) = (0, ncoef);
                 }
                 let mut resid_ready = false;
+                let mut col_cached = [false; 4];
                 let (skip_ctx, dc_ctx) = {
                     let a = &self.ctx.above_ent[plane][x4..x4 + tx.w4()];
                     let l = &self.ctx.left_ent[plane][y4..y4 + tx.h4()];
@@ -522,13 +528,15 @@ impl Encoder {
                 };
                 // --- transform type search ---
                 let mut best = (i64::MAX, 0i64, 0i64, DCT_DCT, 0usize);
+                let mut best_has_dq = false;
+                let mut best_has_recon = false;
                 for &tt in &cands[..ncand] {
                     // A ranking pass over this same block (same contexts and quantizer) may have
                     // evaluated this transform type already.
                     let replayed = replay_src.and_then(|i| s.best_rec[i].find(ncoef, tt));
-                    let (eob, rate_all, dist) = if let Some(r) = replayed {
+                    let (eob, rate_all, dist, has_dq, has_recon) = if let Some(r) = replayed {
                         s.q[..ncoef].copy_from_slice(&r.q[..ncoef]);
-                        (r.eob, r.rate, r.dist)
+                        (r.eob, r.rate, r.dist, false, false)
                     } else {
                         if !resid_ready {
                             let src = &self.src[plane];
@@ -537,6 +545,14 @@ impl Encoder {
                         }
                         if self.lossless {
                             txfm::forward_wht4(&s.resid, txw, &mut s.coeff);
+                        } else if cache_cols {
+                            let (vt, ht) = txfm::TX_TYPE_1D[tt as usize];
+                            let vi = vt as usize;
+                            if !col_cached[vi] {
+                                txfm::forward_cols(&s.resid, txw, tx, vt, &mut s.fwd_col[vi]);
+                                col_cached[vi] = true;
+                            }
+                            txfm::forward_rows(&s.fwd_col[vi], tx, ht, &mut s.coeff);
                         } else {
                             txfm::forward(&s.resid, txw, tx, tt, &mut s.coeff);
                         }
@@ -584,11 +600,19 @@ impl Encoder {
                         };
                         let dist = if is64 {
                             // 64-point transforms drop half of the coefficients:
-                            // measure the distortion in the pixel domain.
+                            // measure the distortion in the pixel domain. QM weighting
+                            // is deliberately not applied here: weighting the dropped
+                            // high frequencies by the QM's (small) outer weight made
+                            // 64-point blocks win far too often and cost +16% BD-rate
+                            // (SSIMULACRA2) / +45% (PSNR) on photos.
                             for r in 0..txh {
                                 s.recon[r * 64..r * 64 + txw].copy_from_slice(&s.pred[r * 64..r * 64 + txw]);
                             }
                             if eob > 0 {
+                                // `s.recon` becomes the final reconstruction for 64-point
+                                // transforms (`best_has_recon`), so use the decoder's exact
+                                // dequantization (24-bit wrap + int16 clamp), not the
+                                // unclamped values from `quantize_fp`/`optimize`.
                                 coef::dequantize(&s.q, sc, eob, quant, tx, tt, &mut s.dq);
                                 txfm::inverse_add(&s.dq, tx, tt, eob, &mut s.recon, 64);
                             }
@@ -606,7 +630,7 @@ impl Encoder {
                             let wt = if self.qm_dist { quant.matrices(tx, tt).map(|m| m.0) } else { None };
                             tx_dist(&s.coeff, &s.dq, ncoef, scale, wt)
                         };
-                        (eob, rate + tt_rate, dist)
+                        (eob, rate + tt_rate, dist, true, is64)
                     };
                     if let Some(i) = rec_dst {
                         let rr = &mut s.rec[i];
@@ -622,8 +646,13 @@ impl Encoder {
                     let first_empty = eob == 0 && best.0 == i64::MAX && tt == DCT_DCT;
                     if rd < best.0 {
                         best = (rd, rate_all, dist, tt, eob);
+                        best_has_dq = has_dq;
+                        best_has_recon = has_recon;
                         if ncand > 1 {
                             s.best_q[..ncoef].copy_from_slice(&s.q[..ncoef]);
+                            if has_dq && eob > 0 {
+                                s.best_dq[..ncoef].copy_from_slice(&s.dq[..ncoef]);
+                            }
                         }
                     }
                     if first_empty {
@@ -656,16 +685,35 @@ impl Encoder {
                     let rec = &mut self.rec[plane];
                     let stride = rec.stride;
                     let base = y * stride + x;
-                    for r in 0..txh {
-                        rec.data[base + r * stride..base + r * stride + txw]
-                            .copy_from_slice(&s.pred[r * 64..r * 64 + txw]);
-                    }
-                    if eob > 0 {
-                        coef::dequantize(&s.q, sc, eob, quant, tx, tt, &mut s.dq);
-                        if self.lossless {
-                            txfm::inverse_wht4_add(&s.dq, &mut rec.data[base..], stride);
-                        } else {
-                            txfm::inverse_add(&s.dq, tx, tt, eob, &mut rec.data[base..], stride);
+                    if best_has_recon {
+                        // For 64-point transforms (ncand == 1), `s.recon` already holds the
+                        // exact reconstructed samples computed during the search loop.
+                        for r in 0..txh {
+                            rec.data[base + r * stride..base + r * stride + txw]
+                                .copy_from_slice(&s.recon[r * 64..r * 64 + txw]);
+                        }
+                    } else {
+                        for r in 0..txh {
+                            rec.data[base + r * stride..base + r * stride + txw]
+                                .copy_from_slice(&s.pred[r * 64..r * 64 + txw]);
+                        }
+                        if eob > 0 {
+                            let dq: &[i32] = if best_has_dq {
+                                let buf = if ncand > 1 { &mut s.best_dq } else { &mut s.dq };
+                                for &rc in &sc[..eob] {
+                                    let v = &mut buf[rc as usize];
+                                    *v = (*v).clamp(-(1 << 15), (1 << 15) - 1);
+                                }
+                                &*buf
+                            } else {
+                                coef::dequantize(&s.q, sc, eob, quant, tx, tt, &mut s.dq);
+                                &s.dq
+                            };
+                            if self.lossless {
+                                txfm::inverse_wht4_add(dq, &mut rec.data[base..], stride);
+                            } else {
+                                txfm::inverse_add(dq, tx, tt, eob, &mut rec.data[base..], stride);
+                            }
                         }
                     }
                 }
@@ -681,7 +729,7 @@ impl Encoder {
                 }
                 if let Some((txbs, coefs)) = out.as_mut() {
                     let start = coefs.len() as u32;
-                    coefs.extend(sc[..eob].iter().map(|&rc| s.q[rc as usize]));
+                    coefs.extend(sc[..eob].iter().map(|&rc| s.q[rc as usize] as i16));
                     txbs.push(TxbDec { tx_type: tt, eob: eob as u16, coef_start: start });
                 }
                 col_off += txw;

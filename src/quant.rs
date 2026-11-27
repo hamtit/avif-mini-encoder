@@ -36,9 +36,19 @@ pub struct PlaneQuant {
 
 impl PlaneQuant {
     pub fn new(qindex: i32, dc_delta: i32, ac_delta: i32, qm_level: u8, chroma: bool) -> Self {
-        let dq = [dc_q(qindex, dc_delta), ac_q(qindex, ac_delta)];
         // Sharpness 7 (tune IQ) makes the FP rounding factor 64 (round to nearest).
-        let rounding_fp = 64;
+        Self::new_with_rounding(qindex, dc_delta, ac_delta, qm_level, chroma, 64)
+    }
+
+    pub fn new_with_rounding(
+        qindex: i32,
+        dc_delta: i32,
+        ac_delta: i32,
+        qm_level: u8,
+        chroma: bool,
+        rounding_fp: i32,
+    ) -> Self {
+        let dq = [dc_q(qindex, dc_delta), ac_q(qindex, ac_delta)];
         PlaneQuant {
             dequant: dq,
             quant_fp: [(1 << 16) / dq[0], (1 << 16) / dq[1]],

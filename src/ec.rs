@@ -7,8 +7,12 @@ const EC_PROB_SHIFT: u32 = 6;
 const EC_MIN_PROB: u32 = 4;
 
 pub struct SymbolWriter {
-    /// Output bytes before carry propagation (each entry may exceed 255).
-    precarry: Vec<u16>,
+    /// Finalized output bytes (all carries already propagated).
+    buf: Vec<u8>,
+    /// Most recent non-0xFF byte waiting for potential carry propagation, or None before first byte.
+    cached: Option<u8>,
+    /// Number of consecutive 0xFF bytes following `cached`.
+    ff_count: usize,
     low: u32,
     rng: u32,
     cnt: i32,
@@ -22,7 +26,40 @@ impl Default for SymbolWriter {
 
 impl SymbolWriter {
     pub fn new() -> Self {
-        SymbolWriter { precarry: Vec::with_capacity(1 << 12), low: 0, rng: 0x8000, cnt: -9 }
+        SymbolWriter { buf: Vec::with_capacity(1 << 12), cached: None, ff_count: 0, low: 0, rng: 0x8000, cnt: -9 }
+    }
+
+    /// Emit one pre-carry byte `v` (0..=511), propagating any carry online.
+    #[inline]
+    fn emit(&mut self, v: u32) {
+        let carry = v >> 8;
+        let byte = (v & 0xFF) as u8;
+        if carry != 0 {
+            if let Some(b) = self.cached {
+                self.buf.push(b.wrapping_add(carry as u8));
+                if self.ff_count != 0 {
+                    self.buf.resize(self.buf.len() + self.ff_count, 0x00);
+                    self.ff_count = 0;
+                }
+            }
+            if byte == 0xFF && !self.buf.is_empty() {
+                self.cached = self.buf.pop();
+                self.ff_count = 1;
+            } else {
+                self.cached = Some(byte);
+            }
+        } else if byte == 0xFF && self.cached.is_some() {
+            self.ff_count += 1;
+        } else {
+            if let Some(b) = self.cached {
+                self.buf.push(b);
+                if self.ff_count != 0 {
+                    self.buf.resize(self.buf.len() + self.ff_count, 0xFF);
+                    self.ff_count = 0;
+                }
+            }
+            self.cached = Some(byte);
+        }
     }
 
     #[inline]
@@ -34,12 +71,12 @@ impl SymbolWriter {
             c += 16;
             let mut m = (1u32 << c) - 1;
             if s >= 8 {
-                self.precarry.push((low >> c) as u16);
+                self.emit(low >> c);
                 low &= m;
                 c -= 8;
                 m >>= 8;
             }
-            self.precarry.push((low >> c) as u16);
+            self.emit(low >> c);
             s = c + d - 24;
             low &= m;
         }
@@ -102,7 +139,7 @@ impl SymbolWriter {
         if s > 0 {
             let mut n = (1u32 << (c + 16)) - 1;
             loop {
-                self.precarry.push((e >> (c + 16)) as u16);
+                self.emit(e >> (c + 16));
                 e &= n;
                 s -= 8;
                 c -= 8;
@@ -112,14 +149,13 @@ impl SymbolWriter {
                 }
             }
         }
-        let mut out = vec![0u8; self.precarry.len()];
-        let mut carry = 0u32;
-        for i in (0..self.precarry.len()).rev() {
-            carry += self.precarry[i] as u32;
-            out[i] = carry as u8;
-            carry >>= 8;
+        if let Some(b) = self.cached {
+            self.buf.push(b);
+            if self.ff_count != 0 {
+                self.buf.resize(self.buf.len() + self.ff_count, 0xFF);
+            }
         }
-        out
+        self.buf
     }
 }
 
@@ -247,5 +283,58 @@ pub fn leb128(mut v: usize, out: &mut Vec<u8>) {
             break;
         }
         out.push(byte | 0x80);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference carry-propagation using the original `precarry: Vec<u16>` logic.
+    fn reference_carry(vals: &[u32]) -> Vec<u8> {
+        let mut out = vec![0u8; vals.len()];
+        let mut carry = 0u32;
+        for i in (0..vals.len()).rev() {
+            carry += vals[i];
+            out[i] = carry as u8;
+            carry >>= 8;
+        }
+        out
+    }
+
+    #[test]
+    fn online_carry_matches_precarry_reference() {
+        // Test long 0xFF chains, carries, and random pre-carry sequences.
+        let patterns: &[&[u32]] = &[
+            &[],
+            &[0x00],
+            &[0xFF],
+            &[0x12, 0xFF, 0xFF, 0xFF, 0x100],
+            &[0x12, 0xFF, 0xFF, 0x34, 0xFF, 0x100, 0xFF, 0x101],
+            &[0x00, 0xFF, 0x1FF, 0x100, 0xFF, 0xFF, 0x100],
+        ];
+        for &pat in patterns {
+            let mut sw = SymbolWriter::new();
+            for &v in pat {
+                sw.emit(v);
+            }
+            if let Some(b) = sw.cached.take() {
+                sw.buf.push(b);
+                if sw.ff_count != 0 {
+                    sw.buf.resize(sw.buf.len() + sw.ff_count, 0xFF);
+                }
+            }
+            assert_eq!(sw.buf, reference_carry(pat), "pattern {pat:x?}");
+        }
+        // Also test a long stream of biased bits that trigger real range-coder carries.
+        let mut sw = SymbolWriter::new();
+        let mut seed = 0x1234_5678u32;
+        for i in 0..4096 {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let b = if i % 64 < 48 { true } else { (seed >> 31) != 0 };
+            sw.bit(b);
+        }
+        let bytes = sw.finish();
+        assert!(!bytes.is_empty());
     }
 }

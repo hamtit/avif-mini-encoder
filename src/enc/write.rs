@@ -2,13 +2,35 @@
 
 use super::block::uv_tx_size;
 use super::search::{cfl_allowed, filter_intra_allowed, gathered_prob, max_tx_depth, tx_depth, tx_size_cat};
-use super::{BlockDec, Contexts, Decisions, Encoder};
+use super::{BlockDec, Contexts, Encoder, TxbDec};
 use crate::cdf::CdfContext;
 use crate::coef::{self, TxbInfo};
 use crate::consts::*;
 use crate::ec::Writer;
 use crate::tables::scan;
 use crate::tables::sizes::EXT_TX_IND;
+
+/// Reusable scratch buffers for superblock syntax writing.
+pub(super) struct WriteScratch {
+    levels: Vec<u8>,
+    q: Vec<i32>,
+}
+
+impl WriteScratch {
+    pub(super) fn new() -> Self {
+        WriteScratch { levels: vec![0; coef::LEVELS_BUF], q: vec![0; 32 * 32] }
+    }
+}
+
+/// Read-only view of one superblock's coding decisions (either from a temporary
+/// `Decisions` buffer or from the flat `FrameDecisions` arena).
+pub(super) struct SbView<'a> {
+    pub qindex: u8,
+    pub parts: &'a [Partition],
+    pub blocks: &'a [BlockDec],
+    pub txbs: &'a [TxbDec],
+    pub coefs: &'a [i16],
+}
 
 struct WriteState<'a> {
     first: bool,
@@ -17,8 +39,7 @@ struct WriteState<'a> {
     cdef_idx: Option<i8>,
     part: usize,
     block: usize,
-    levels: Vec<u8>,
-    q: Vec<i32>,
+    scratch: &'a mut WriteScratch,
 }
 
 impl Encoder {
@@ -28,22 +49,14 @@ impl Encoder {
         w: &mut W,
         cdf: &mut CdfContext,
         ctx: &mut Contexts,
-        dec: &Decisions,
+        dec: &SbView<'_>,
         mi_row: usize,
         mi_col: usize,
         dq: Option<&mut u8>,
         cdef_idx: Option<i8>,
+        scratch: &mut WriteScratch,
     ) {
-        let mut st = WriteState {
-            first: true,
-            cdef_written: false,
-            dq,
-            cdef_idx,
-            part: 0,
-            block: 0,
-            levels: vec![0; coef::LEVELS_BUF],
-            q: vec![0; 32 * 32],
-        };
+        let mut st = WriteState { first: true, cdef_written: false, dq, cdef_idx, part: 0, block: 0, scratch };
         self.write_part(w, cdf, ctx, dec, BlockSize::B64x64, mi_row, mi_col, &mut st);
         debug_assert_eq!(st.part, dec.parts.len());
         debug_assert_eq!(st.block, dec.blocks.len());
@@ -55,7 +68,7 @@ impl Encoder {
         w: &mut W,
         cdf: &mut CdfContext,
         ctx: &mut Contexts,
-        dec: &Decisions,
+        dec: &SbView<'_>,
         bsize: BlockSize,
         mi_row: usize,
         mi_col: usize,
@@ -115,7 +128,7 @@ impl Encoder {
         w: &mut W,
         cdf: &mut CdfContext,
         ctx: &mut Contexts,
-        dec: &Decisions,
+        dec: &SbView<'_>,
         st: &mut WriteState,
     ) {
         let b: &BlockDec = &dec.blocks[st.block];
@@ -253,10 +266,10 @@ impl Encoder {
                     let info = TxbInfo::new(tx, t.tx_type);
                     let sc = scan(tx.coded(), info.tx_class);
                     let n = info.width * info.height;
-                    st.q[..n].fill(0);
+                    st.scratch.q[..n].fill(0);
                     let eob = t.eob as usize;
                     for (i, &rc) in sc[..eob].iter().enumerate() {
-                        st.q[rc as usize] = dec.coefs[t.coef_start as usize + i];
+                        st.scratch.q[rc as usize] = dec.coefs[t.coef_start as usize + i] as i32;
                     }
                     let lossless = self.lossless;
                     let tt = t.tx_type;
@@ -264,7 +277,7 @@ impl Encoder {
                     coef::write_coeffs(
                         w,
                         coef_cdf,
-                        &st.q,
+                        &st.scratch.q,
                         eob,
                         sc,
                         &info,
@@ -273,7 +286,7 @@ impl Encoder {
                         dc_ctx,
                         |w: &mut W| {
                             if p == 0 && !lossless {
-                                let set = intra_tx_set(tx, false);
+                                let set = intra_tx_set(tx, REDUCED_TX_SET);
                                 let ns = NUM_EXT_TX_SET[set];
                                 if ns > 1 {
                                     w.symbol(
@@ -284,9 +297,9 @@ impl Encoder {
                                 }
                             }
                         },
-                        &mut st.levels,
+                        &mut st.scratch.levels,
                     );
-                    let cul = coef::txb_entropy_ctx(&st.q, sc, eob);
+                    let cul = coef::txb_entropy_ctx(&st.scratch.q, sc, eob);
                     let max_x4 = pw >> 2;
                     let max_y4 = ph >> 2;
                     for i in 0..tx.w4() {

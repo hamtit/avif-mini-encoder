@@ -299,6 +299,31 @@ fn inverse_add_impl(
 ) {
     let w = tx_size.width();
     let h = tx_size.height();
+    // Exact DC-only fast path for DCT_DCT when eob == 1.
+    if eob == 1 && tx_type == crate::consts::DCT_DCT {
+        let shift = INV_SHIFT[tx_size as usize];
+        let mut v = coeff[0];
+        if rect_log_ratio(w, h).abs() == 1 {
+            v = v.mul(NEW_INV_SQRT2).round_shift(NEW_SQRT2_BITS);
+        }
+        v = v.clamp_bits(16);
+        v = v.mul(NEW_INV_SQRT2).round_shift(INV_COS_BIT as u32).clamp_bits(16);
+        if shift[0] < 0 {
+            v = v.round_shift((-shift[0]) as u32);
+        }
+        v = v.clamp_bits(16);
+        v = v.mul(NEW_INV_SQRT2).round_shift(INV_COS_BIT as u32).clamp_bits(16);
+        let delta = v.round_shift((-shift[1]) as u32);
+        if delta != 0 {
+            for r in 0..h {
+                let row = &mut dst[r * stride..r * stride + w];
+                for px in row {
+                    *px = (*px as i32 + delta).clamp(0, 255) as u8;
+                }
+            }
+        }
+        return;
+    }
     if w >= 8 && h >= 8 {
         inverse_add_n::<8>(coeff, tx_size, tx_type, eob, dst, stride, sc)
     } else {
@@ -328,18 +353,28 @@ fn inverse_add_n<const L: usize>(
     let cw = w.min(32);
     let (buf, tin, tout) = <Simd<L> as ScratchLanes>::lanes(sc);
     // Row transforms, L rows at a time. Rows >= 32 of 64-high blocks have
-    // zero input and produce zero output.
+    // zero input and produce zero output; strips whose coefficients are all
+    // zero also skip the 1-D transform.
     for r0 in (0..ch).step_by(L) {
-        for c in 0..w {
+        let mut nonzero = 0i32;
+        for c in 0..cw {
             let mut v = [0i32; L];
-            if c < cw {
-                v.copy_from_slice(&coeff[c * ch + r0..c * ch + r0 + L]);
+            v.copy_from_slice(&coeff[c * ch + r0..c * ch + r0 + L]);
+            for l in 0..L {
+                nonzero |= v[l];
             }
             let mut v = Simd(v);
             if rect {
                 v = v.mul(NEW_INV_SQRT2).round_shift(NEW_SQRT2_BITS);
             }
             tin[c] = v.clamp_bits(16);
+        }
+        if nonzero == 0 {
+            buf[r0 * w..(r0 + L) * w].fill(0);
+            continue;
+        }
+        for c in cw..w {
+            tin[c] = Simd::ZERO;
         }
         inv_1d(ht, w, tin, tout);
         for c in 0..w {
@@ -394,6 +429,37 @@ pub fn forward(residual: &[i16], stride: usize, tx_size: TxSize, tx_type: TxType
     });
 }
 
+/// Vertical (column) 1-D forward pass into row-major `col_buf` (size `oh * w`,
+/// where `oh = h.min(32)`). Independent of the horizontal transform type so the
+/// result can be reused across transform-type candidates sharing `vt`.
+pub fn forward_cols(residual: &[i16], stride: usize, tx_size: TxSize, vt: Tx1d, col_buf: &mut [i32]) {
+    SCRATCH.with(|sc| {
+        let mut sc = sc.borrow_mut();
+        #[cfg(target_arch = "x86_64")]
+        if crate::has_avx2() {
+            // SAFETY: AVX2 support was checked at runtime.
+            unsafe { forward_cols_avx2(residual, stride, tx_size, vt, col_buf, &mut sc) };
+            return;
+        }
+        forward_cols_impl(residual, stride, tx_size, vt, col_buf, &mut sc);
+    });
+}
+
+/// Horizontal (row) 1-D forward pass from `col_buf` (produced by [`forward_cols`])
+/// into column-major coded coefficients `out`.
+pub fn forward_rows(col_buf: &[i32], tx_size: TxSize, ht: Tx1d, out: &mut [i32]) {
+    SCRATCH.with(|sc| {
+        let mut sc = sc.borrow_mut();
+        #[cfg(target_arch = "x86_64")]
+        if crate::has_avx2() {
+            // SAFETY: AVX2 support was checked at runtime.
+            unsafe { forward_rows_avx2(col_buf, tx_size, ht, out, &mut sc) };
+            return;
+        }
+        forward_rows_impl(col_buf, tx_size, ht, out, &mut sc);
+    });
+}
+
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn forward_avx2(
@@ -405,6 +471,25 @@ unsafe fn forward_avx2(
     sc: &mut TxScratch,
 ) {
     forward_impl(residual, stride, tx_size, tx_type, out, sc);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn forward_cols_avx2(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    vt: Tx1d,
+    col_buf: &mut [i32],
+    sc: &mut TxScratch,
+) {
+    forward_cols_impl(residual, stride, tx_size, vt, col_buf, sc);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn forward_rows_avx2(col_buf: &[i32], tx_size: TxSize, ht: Tx1d, out: &mut [i32], sc: &mut TxScratch) {
+    forward_rows_impl(col_buf, tx_size, ht, out, sc);
 }
 
 #[inline(always)]
@@ -422,6 +507,114 @@ fn forward_impl(
         forward_n::<8>(residual, stride, tx_size, tx_type, out, sc)
     } else {
         forward_n::<4>(residual, stride, tx_size, tx_type, out, sc)
+    }
+}
+
+#[inline(always)]
+fn forward_cols_impl(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    vt: Tx1d,
+    col_buf: &mut [i32],
+    sc: &mut TxScratch,
+) {
+    let w = tx_size.width();
+    let h = tx_size.height();
+    if w >= 8 && h >= 8 {
+        forward_cols_n::<8>(residual, stride, tx_size, vt, col_buf, sc)
+    } else {
+        forward_cols_n::<4>(residual, stride, tx_size, vt, col_buf, sc)
+    }
+}
+
+#[inline(always)]
+fn forward_rows_impl(col_buf: &[i32], tx_size: TxSize, ht: Tx1d, out: &mut [i32], sc: &mut TxScratch) {
+    let w = tx_size.width();
+    let h = tx_size.height();
+    if w >= 8 && h >= 8 {
+        forward_rows_n::<8>(col_buf, tx_size, ht, out, sc)
+    } else {
+        forward_rows_n::<4>(col_buf, tx_size, ht, out, sc)
+    }
+}
+
+#[inline(always)]
+fn forward_cols_n<const L: usize>(
+    residual: &[i16],
+    stride: usize,
+    tx_size: TxSize,
+    vt: Tx1d,
+    col_buf: &mut [i32],
+    sc: &mut TxScratch,
+) where
+    Simd<L>: ScratchLanes,
+{
+    let w = tx_size.width();
+    let h = tx_size.height();
+    let oh = h.min(32);
+    let shift = FWD_SHIFT[tx_size as usize];
+    let wi = w.trailing_zeros() as usize - 2;
+    let hi = h.trailing_zeros() as usize - 2;
+    let cos_col = FWD_COS_BIT_COL[wi][hi];
+    let ud_flip = vt == Tx1d::FlipAdst;
+    let (_, tin, tout) = <Simd<L> as ScratchLanes>::lanes(sc);
+    for c0 in (0..w).step_by(L) {
+        for r in 0..h {
+            let sr = if ud_flip { h - 1 - r } else { r };
+            let src = &residual[sr * stride + c0..sr * stride + c0 + L];
+            let v = Simd::<L>(core::array::from_fn(|l| src[l] as i32));
+            tin[r] = if shift[0] > 0 {
+                v.shl(shift[0] as u32)
+            } else if shift[0] < 0 {
+                v.round_shift((-shift[0]) as u32)
+            } else {
+                v
+            };
+        }
+        fwd_1d(vt, h, tin, tout, cos_col);
+        for r in 0..oh {
+            let mut v = tout[r];
+            if shift[1] < 0 {
+                v = v.round_shift((-shift[1]) as u32);
+            }
+            col_buf[r * w + c0..r * w + c0 + L].copy_from_slice(&v.0);
+        }
+    }
+}
+
+#[inline(always)]
+fn forward_rows_n<const L: usize>(col_buf: &[i32], tx_size: TxSize, ht: Tx1d, out: &mut [i32], sc: &mut TxScratch)
+where
+    Simd<L>: ScratchLanes,
+{
+    let w = tx_size.width();
+    let h = tx_size.height();
+    let oh = h.min(32);
+    let ow = w.min(32);
+    let shift = FWD_SHIFT[tx_size as usize];
+    let wi = w.trailing_zeros() as usize - 2;
+    let hi = h.trailing_zeros() as usize - 2;
+    let cos_row = FWD_COS_BIT_ROW[wi][hi];
+    let rect = rect_log_ratio(w, h).abs() == 1;
+    let lr_flip = ht == Tx1d::FlipAdst;
+    let (_, tin, tout) = <Simd<L> as ScratchLanes>::lanes(sc);
+    for r0 in (0..oh).step_by(L) {
+        for c in 0..w {
+            let sc_col = if lr_flip { w - 1 - c } else { c };
+            tin[c] = Simd(core::array::from_fn(|l| col_buf[(r0 + l) * w + sc_col]));
+        }
+        fwd_1d(ht, w, tin, tout, cos_row);
+        for c in 0..ow {
+            let mut v = tout[c];
+            if shift[2] < 0 {
+                v = v.round_shift((-shift[2]) as u32);
+            }
+            if rect {
+                v = v.mul(NEW_SQRT2).round_shift(NEW_SQRT2_BITS);
+            }
+            out[c * oh + r0..c * oh + r0 + L].copy_from_slice(&v.0);
+        }
     }
 }
 
@@ -448,6 +641,8 @@ fn forward_n<const L: usize>(
     let lr_flip = ht == Tx1d::FlipAdst;
     let ud_flip = vt == Tx1d::FlipAdst;
     let (buf, tin, tout) = <Simd<L> as ScratchLanes>::lanes(sc);
+    let oh = h.min(32);
+    let ow = w.min(32);
     // Columns, L at a time.
     for c0 in (0..w).step_by(L) {
         for r in 0..h {
@@ -463,7 +658,7 @@ fn forward_n<const L: usize>(
             };
         }
         fwd_1d(vt, h, tin, tout, cos_col);
-        for r in 0..h {
+        for r in 0..oh {
             let mut v = tout[r];
             if shift[1] < 0 {
                 v = v.round_shift((-shift[1]) as u32);
@@ -475,9 +670,7 @@ fn forward_n<const L: usize>(
         }
     }
     // Rows, L at a time. Only the coded 32 rows/columns are kept for 64.
-    let oh = h.min(32);
-    let ow = w.min(32);
-    for r0 in (0..h.min(32)).step_by(L) {
+    for r0 in (0..oh).step_by(L) {
         for c in 0..w {
             tin[c] = Simd(core::array::from_fn(|l| buf[(r0 + l) * w + c]));
         }
@@ -685,5 +878,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dc_only_and_split_forward_match_reference() {
+        let mut seed = 0xCAFE_BABEu32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            seed
+        };
+        SCRATCH.with(|sc| {
+            let mut sc = sc.borrow_mut();
+            for &tx in TxSize::ALL.iter() {
+                let (w, h) = (tx.width(), tx.height());
+                let n = w.min(32) * h.min(32);
+                let stride = w + 3;
+                // 1) DC-only eob == 1 fast path must be bit-exact with full inverse_add_n.
+                for dc in [-32768i32, -12345, -100, -1, 0, 1, 100, 12345, 32767] {
+                    let mut coeff = vec![0i32; n];
+                    coeff[0] = dc;
+                    let base: Vec<u8> = (0..stride * h).map(|_| rnd() as u8).collect();
+                    let mut fast = base.clone();
+                    let mut full = base.clone();
+                    inverse_add_impl(&coeff, tx, crate::consts::DCT_DCT, 1, &mut fast, stride, &mut sc);
+                    if w >= 8 && h >= 8 {
+                        inverse_add_n::<8>(&coeff, tx, crate::consts::DCT_DCT, n, &mut full, stride, &mut sc);
+                    } else {
+                        inverse_add_n::<4>(&coeff, tx, crate::consts::DCT_DCT, n, &mut full, stride, &mut sc);
+                    }
+                    assert_eq!(fast, full, "DC-only mismatch for {tx:?} dc={dc}");
+                }
+                // 2) forward_cols + forward_rows must be bit-exact with forward for all valid tx types.
+                let set = crate::consts::intra_tx_set(tx, false);
+                let resid: Vec<i16> = (0..stride * h).map(|_| (rnd() % 511) as i16 - 255).collect();
+                let mut col_buf = vec![0i32; h.min(32) * w];
+                for tt in 0..16u8 {
+                    if !crate::consts::tx_in_set(set, tt) {
+                        continue;
+                    }
+                    let (vt, ht) = TX_TYPE_1D[tt as usize];
+                    let mut expected = vec![0i32; n];
+                    let mut actual = vec![0i32; n];
+                    forward_impl(&resid, stride, tx, tt, &mut expected, &mut sc);
+                    forward_cols_impl(&resid, stride, tx, vt, &mut col_buf, &mut sc);
+                    forward_rows_impl(&col_buf, tx, ht, &mut actual, &mut sc);
+                    assert_eq!(actual, expected, "split forward mismatch for {tx:?} tt={tt}");
+                }
+            }
+        });
     }
 }

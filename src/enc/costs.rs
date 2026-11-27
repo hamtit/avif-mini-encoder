@@ -70,7 +70,12 @@ impl ModeCosts {
             }
         }
         let mut tmp = [0u32; 16];
-        for (set_idx, set) in [(1usize, EXT_TX_SET_DTT4_IDTX_1DDCT), (2, EXT_TX_SET_DTT4_IDTX)] {
+        let sets: &[(usize, usize)] = if REDUCED_TX_SET {
+            &[(2, EXT_TX_SET_DTT4_IDTX)]
+        } else {
+            &[(1, EXT_TX_SET_DTT4_IDTX_1DDCT), (2, EXT_TX_SET_DTT4_IDTX)]
+        };
+        for &(set_idx, set) in sets {
             let n = NUM_EXT_TX_SET[set];
             for sz in 0..4 {
                 for dir in 0..13 {
@@ -92,7 +97,7 @@ impl ModeCosts {
     /// Cost of the luma transform type (0 when it is not signalled).
     #[inline]
     pub fn tx_type_cost(&self, tx: TxSize, intra_dir: u8, t: TxType) -> u32 {
-        let set = intra_tx_set(tx, false);
+        let set = intra_tx_set(tx, REDUCED_TX_SET);
         if NUM_EXT_TX_SET[set] <= 1 {
             return 0;
         }

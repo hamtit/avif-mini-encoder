@@ -282,7 +282,7 @@ impl Encoder {
         if !has_rows && !has_cols {
             return 0;
         }
-        let psum = gathered_prob(&self.cdf.partition[ctx], !has_rows);
+        let psum = gathered_prob(&self.cdf.as_ref().unwrap().partition[ctx], !has_rows);
         if p == Partition::Split { cost_symbol(psum) } else { cost_symbol(32768 - psum) }
     }
 
@@ -493,18 +493,20 @@ impl Encoder {
         self.mode_costs.tx_size[cat][self.tx_size_ctx(bsize, mi_row, mi_col)][depth]
     }
 
-    fn save_ent(&self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, out: &mut (Vec<u8>, Vec<u8>)) {
+    fn save_ent(&self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, out: &mut ([u8; 16], [u8; 16])) {
         let (x, y, w, h) = plane_region(self, plane, bsize, mi_row, mi_col);
-        out.0.clear();
-        out.0.extend_from_slice(&self.ctx.above_ent[plane][x / 4..x / 4 + w / 4]);
-        out.1.clear();
-        out.1.extend_from_slice(&self.ctx.left_ent[plane][y / 4..y / 4 + h / 4]);
+        let (w4, h4) = (w / 4, h / 4);
+        debug_assert!(w4 <= 16 && h4 <= 16, "entropy context save buffer holds at most 64x64");
+        out.0[..w4].copy_from_slice(&self.ctx.above_ent[plane][x / 4..x / 4 + w4]);
+        out.1[..h4].copy_from_slice(&self.ctx.left_ent[plane][y / 4..y / 4 + h4]);
     }
 
-    fn load_ent(&mut self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, saved: &(Vec<u8>, Vec<u8>)) {
+    fn load_ent(&mut self, plane: usize, bsize: BlockSize, mi_row: usize, mi_col: usize, saved: &([u8; 16], [u8; 16])) {
         let (x, y, w, h) = plane_region(self, plane, bsize, mi_row, mi_col);
-        self.ctx.above_ent[plane][x / 4..x / 4 + w / 4].copy_from_slice(&saved.0);
-        self.ctx.left_ent[plane][y / 4..y / 4 + h / 4].copy_from_slice(&saved.1);
+        let (w4, h4) = (w / 4, h / 4);
+        debug_assert!(w4 <= 16 && h4 <= 16, "entropy context save buffer holds at most 64x64");
+        self.ctx.above_ent[plane][x / 4..x / 4 + w4].copy_from_slice(&saved.0[..w4]);
+        self.ctx.left_ent[plane][y / 4..y / 4 + h4].copy_from_slice(&saved.1[..h4]);
     }
 
     /// Predict the whole block (one transform of size `tx` at the block
@@ -563,8 +565,8 @@ impl Encoder {
         let bsize = bp.bsize;
         let pbs = bsize.subsampled(sx, sy);
         let (bw4, bh4) = (bsize.w4() as isize, bsize.h4() as isize);
-        let mb_to_right = ((self.mi_cols as isize - bw4 - bp.mi_col as isize) * 4) >> sx;
-        let mb_to_bottom = ((self.mi_rows as isize - bh4 - bp.mi_row as isize) * 4) >> sy;
+        let mb_to_right = ((self.tile.mi_col_end as isize - bw4 - bp.mi_col as isize) * 4) >> sx;
+        let mb_to_bottom = ((self.tile.mi_row_end as isize - bh4 - bp.mi_row as isize) * 4) >> sy;
         let (txw, txh) = (tx.width() as isize, tx.height() as isize);
         let xr = mb_to_right + (pbs.width().max(4) as isize) - txw;
         let yd = mb_to_bottom + (pbs.height().max(4) as isize) - txh;
@@ -682,7 +684,7 @@ impl Encoder {
         let mut bp = BlockPos { bsize, mi_row, mi_col, partition, luma_tx: max_tx };
         let has_chroma = self.has_chroma(bsize, mi_row, mi_col);
         let ctx = self.y_mode_ctx(mi_row, mi_col);
-        let mut saved = [(Vec::new(), Vec::new()), (Vec::new(), Vec::new()), (Vec::new(), Vec::new())];
+        let mut saved = [([0u8; 16], [0u8; 16]); 3];
         self.save_ent(0, bsize, mi_row, mi_col, &mut saved[0]);
         if has_chroma {
             self.save_ent(1, bsize, mi_row, mi_col, &mut saved[1]);
@@ -694,7 +696,9 @@ impl Encoder {
         // ---- luma: model ranking
         prof::count(5);
         let t0 = prof::start();
-        let mut ranked: Vec<(f64, Modes)> = Vec::with_capacity(80);
+        // Base modes, 6 angle deltas around the best directional modes, 5 filter-intra modes.
+        let mut ranked = [(0.0f64, Modes::default()); INTRA_MODES + ANGLE_SEARCH_MODES * 6 + 5];
+        let mut nranked = 0usize;
         let model_tx = if self.lossless { TxSize::T4x4 } else { max_tx };
         let env = self.model_env(0, &bp, model_tx);
         let push = |e: &Encoder, m: Modes, pred: &mut [u8]| {
@@ -707,28 +711,38 @@ impl Encoder {
                 continue;
             }
             let m = Modes { y_mode: mode, ..Modes::default() };
-            ranked.push(push(self, m, &mut s.pred));
+            ranked[nranked] = push(self, m, &mut s.pred);
+            nranked += 1;
         }
         if use_angle && !dbg("AV1_NO_ANGLE") {
             // Angle deltas only around the two best directional modes.
-            let mut dirs: Vec<(f64, u8)> =
-                ranked.iter().filter(|r| is_directional(r.1.y_mode)).map(|r| (r.0, r.1.y_mode)).collect();
-            sort_front(&mut dirs, ANGLE_SEARCH_MODES);
-            for &(_, mode) in dirs.iter().take(ANGLE_SEARCH_MODES) {
+            let mut dirs = [(0.0f64, 0u8); INTRA_MODES];
+            let mut ndirs = 0usize;
+            for &(cost, m) in &ranked[..nranked] {
+                if is_directional(m.y_mode) {
+                    dirs[ndirs] = (cost, m.y_mode);
+                    ndirs += 1;
+                }
+            }
+            let n_ang = ANGLE_SEARCH_MODES.min(ndirs);
+            sort_front(&mut dirs[..ndirs], n_ang);
+            for &(_, mode) in &dirs[..n_ang] {
                 for a in [-3i8, -2, -1, 1, 2, 3] {
                     let m = Modes { y_mode: mode, angle_y: a, ..Modes::default() };
-                    ranked.push(push(self, m, &mut s.pred));
+                    ranked[nranked] = push(self, m, &mut s.pred);
+                    nranked += 1;
                 }
             }
         }
         if filter_intra_allowed(bsize) && !self.lossless && !dbg("AV1_NO_FI") {
             for f in 0..5u8 {
                 let m = Modes { y_mode: DC_PRED, filter_intra: Some(f), ..Modes::default() };
-                ranked.push(push(self, m, &mut s.pred));
+                ranked[nranked] = push(self, m, &mut s.pred);
+                nranked += 1;
             }
         }
-        let top_k = 3.min(ranked.len());
-        sort_front(&mut ranked, top_k);
+        let top_k = 3.min(nranked);
+        sort_front(&mut ranked[..nranked], top_k);
         prof::add(0, t0);
         let t0 = prof::start();
 
@@ -747,7 +761,7 @@ impl Encoder {
                 // is done for the winner).
                 let dir = m.filter_intra.map(|f| FILTER_INTRA_MODE_TO_DIR[f as usize]).unwrap_or(m.y_mode);
                 let t = MODE_TO_TXFM[dir as usize];
-                TxSearch::Pair(if tx_in_set(intra_tx_set(max_tx, false), t) { t } else { DCT_DCT })
+                TxSearch::Pair(if tx_in_set(intra_tx_set(max_tx, REDUCED_TX_SET), t) { t } else { DCT_DCT })
             };
             let mode_rate = self.luma_mode_rate(bsize, ctx, &m) as i64;
             let bound = s.use_rd_budget.then_some(PlaneBound { rd: best_y.0, rate: mode_rate, dist: 0 });
@@ -865,7 +879,8 @@ impl Encoder {
         // ---- chroma
         if has_chroma {
             let uvtx = if self.lossless { TxSize::T4x4 } else { uv_tx_size(bsize, self.ssx, self.ssy) };
-            let mut ranked: Vec<(f64, Modes)> = Vec::with_capacity(16);
+            let mut ranked = [(0.0f64, Modes::default()); INTRA_MODES];
+            let mut nranked = 0usize;
             let (env1, env2) = (self.model_env(1, &bp, uvtx), self.model_env(2, &bp, uvtx));
             for mode in 0..INTRA_MODES as u8 {
                 if dbg("AV1_DC_ONLY") && mode != DC_PRED {
@@ -875,17 +890,24 @@ impl Encoder {
                 let su = self.model_satd(&env1, &bp, &m, uvtx, &mut s.pred)
                     + self.model_satd(&env2, &bp, &m, uvtx, &mut s.pred);
                 let rate = self.uv_mode_rate(bsize, &m) as f64 / 512.0;
-                ranked.push((su as f64 + lambda_sad * rate * 4.0, m));
+                ranked[nranked] = (su as f64 + lambda_sad * rate * 4.0, m);
+                nranked += 1;
             }
-            sort_front(&mut ranked, 3);
-            let mut cands: Vec<Modes> = ranked.iter().take(3).map(|r| r.1).collect();
+            let top_uv = 3.min(nranked);
+            sort_front(&mut ranked[..nranked], top_uv);
+            let mut cands = [Modes::default(); 4];
+            let mut ncands = top_uv;
+            for i in 0..top_uv {
+                cands[i] = ranked[i].1;
+            }
             if cfl_allowed(bsize, self.lossless, self.ssx, self.ssy)
                 && bsize.w4() >= 2
                 && bsize.h4() >= 2
                 && !dbg("AV1_NO_CFL")
                 && let Some(m) = self.search_cfl_alpha(s, &bp, &ym, uvtx)
             {
-                cands.push(m);
+                cands[ncands] = m;
+                ncands += 1;
             }
             let mut best_uv = (i64::MAX, ym);
             // The final pass repeats the ranking pass of the chosen candidate (trellis is off by
@@ -894,7 +916,7 @@ impl Encoder {
             for r in s.scratch.best_rec.iter_mut() {
                 r.n = 0;
             }
-            'candidate: for m in cands {
+            'candidate: for &m in &cands[..ncands] {
                 self.load_ent(1, bsize, mi_row, mi_col, &saved[1]);
                 self.load_ent(2, bsize, mi_row, mi_col, &saved[2]);
                 let mut r = self.uv_mode_rate(bsize, &m) as i64;
